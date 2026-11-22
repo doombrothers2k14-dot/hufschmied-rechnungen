@@ -1,8 +1,9 @@
 // Offline-Cache für die App-Dateien. Bei jeder neuen Version VERSION erhöhen.
-const VERSION = 'v1.0.0';
+const VERSION = 'v1.1.0';
 const DATEIEN = [
   './', './index.html', './manifest.webmanifest', './css/app.css',
-  './js/main.js', './js/db.js', './js/logic.js', './js/pdf.js', './js/einvoice.js', './js/export.js',
+  './config.js', './js/main.js', './js/db.js', './js/logic.js', './js/pdf.js', './js/einvoice.js', './js/export.js',
+  './js/crypto.js', './js/sync.js', './js/remote.js', './js/konto.js', './vendor/supabase.js',
   './vendor/preact.mjs', './vendor/hooks.mjs', './vendor/htm.mjs', './vendor/qrcode.mjs',
   './vendor/pdf-lib.min.js', './vendor/jszip.min.js', './vendor/xlsx.full.min.js',
   './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'

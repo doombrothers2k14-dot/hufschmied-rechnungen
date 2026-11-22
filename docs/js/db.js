@@ -1,28 +1,53 @@
-// Datenhaltung im Gerät (IndexedDB). Nichts verlässt das iPhone, außer man teilt es bewusst.
+// Datenhaltung im Gerät (IndexedDB). Mit eingeschalteter Synchronisierung werden Änderungen
+// zusätzlich in einer Warteschlange (outbox) vermerkt und verschlüsselt hochgeladen.
 import { uid, formatNummer, heuteISO } from './logic.js';
 
-const DB_NAME = 'hufschmied-rechnungen';
-const DB_VERSION = 1;
-const STORES = ['settings', 'customers', 'horses', 'services', 'invoices', 'files', 'log'];
+let DB_NAME = 'hufschmied-rechnungen';
+const DB_VERSION = 2;
+export const SYNC_STORES = ['settings', 'customers', 'horses', 'services', 'invoices', 'log'];
+const BACKUP_STORES = [...SYNC_STORES, 'files'];
 
 let dbPromise = null;
+let syncAktiv = false;
+const zuhoerer = new Set();
+let dateiNachladen = null;
+
+export function _setDbName(name) { DB_NAME = name; dbPromise = null; } // nur für Tests
+export function setSyncAktiv(an) { syncAktiv = !!an; }
+export function istSyncAktiv() { return syncAktiv; }
+export function onAenderung(fn) { zuhoerer.add(fn); return () => zuhoerer.delete(fn); }
+export function setDateiNachladen(fn) { dateiNachladen = fn; }
+const gemeldet = () => zuhoerer.forEach((fn) => { try { fn(); } catch (e) { console.error(e); } });
 
 function open() {
   if (dbPromise) return dbPromise;
   dbPromise = new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => {
+    req.onupgradeneeded = (ev) => {
       const db = req.result;
-      db.createObjectStore('settings', { keyPath: 'key' });
-      db.createObjectStore('customers', { keyPath: 'id' });
-      const h = db.createObjectStore('horses', { keyPath: 'id' });
-      h.createIndex('customerId', 'customerId');
-      db.createObjectStore('services', { keyPath: 'id' });
-      const i = db.createObjectStore('invoices', { keyPath: 'id' });
-      i.createIndex('nr', 'nr', { unique: true });
-      i.createIndex('datum', 'datum');
-      db.createObjectStore('files', { keyPath: 'id' });
-      db.createObjectStore('log', { keyPath: 'id', autoIncrement: true });
+      const alt = ev.oldVersion;
+      if (alt < 1) {
+        db.createObjectStore('settings', { keyPath: 'key' });
+        db.createObjectStore('customers', { keyPath: 'id' });
+        db.createObjectStore('horses', { keyPath: 'id' }).createIndex('customerId', 'customerId');
+        db.createObjectStore('services', { keyPath: 'id' });
+        const i = db.createObjectStore('invoices', { keyPath: 'id' });
+        i.createIndex('nr', 'nr', { unique: false });
+        i.createIndex('datum', 'datum');
+        db.createObjectStore('files', { keyPath: 'id' });
+      }
+      if (alt < 2) {
+        // Protokoll mit eindeutigen IDs statt Zählern, damit mehrere Geräte zusammenpassen
+        if (db.objectStoreNames.contains('log')) db.deleteObjectStore('log');
+        db.createObjectStore('log', { keyPath: 'id' });
+        db.createObjectStore('outbox', { keyPath: 'key' });
+        db.createObjectStore('local', { keyPath: 'key' });
+        if (alt >= 1) {
+          const inv = req.transaction.objectStore('invoices');
+          inv.deleteIndex('nr');
+          inv.createIndex('nr', 'nr', { unique: false });
+        }
+      }
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -45,6 +70,12 @@ function reqP(r) {
   });
 }
 
+const okey = (store, id) => store + '|' + id;
+function vormerken(tx, store, id, op) {
+  if (!syncAktiv) return;
+  tx.objectStore('outbox').put({ key: okey(store, id), store, id, op, seq: Date.now() + Math.random() });
+}
+
 export async function all(store) {
   const db = await open();
   return reqP(db.transaction(store).objectStore(store).getAll());
@@ -57,23 +88,103 @@ export async function get(store, key) {
 
 export async function put(store, value) {
   const db = await open();
-  const tx = db.transaction([store, 'log'], 'readwrite');
+  const tx = db.transaction([store, 'outbox'], 'readwrite');
   tx.objectStore(store).put(value);
+  vormerken(tx, store, value.id || value.key, 'put');
   await done(tx);
+  gemeldet();
   return value;
 }
 
 export async function del(store, key) {
   const db = await open();
-  const tx = db.transaction(store, 'readwrite');
+  const tx = db.transaction([store, 'outbox'], 'readwrite');
   tx.objectStore(store).delete(key);
+  vormerken(tx, store, key, 'del');
   await done(tx);
+  gemeldet();
 }
 
 export async function log(aktion, ref, details) {
+  await put('log', { id: uid(), ts: new Date().toISOString(), aktion, ref: ref || null, details: details || null });
+}
+
+// --- Gerätebezogene Werte (werden nicht synchronisiert) ---------------------
+
+export async function lokal(key) {
+  const r = await get('local', key);
+  return r ? r.value : undefined;
+}
+export async function setLokal(key, value) {
   const db = await open();
-  const tx = db.transaction('log', 'readwrite');
-  tx.objectStore('log').add({ ts: new Date().toISOString(), aktion, ref: ref || null, details: details || null });
+  const tx = db.transaction('local', 'readwrite');
+  if (value === undefined) tx.objectStore('local').delete(key);
+  else tx.objectStore('local').put({ key, value });
+  await done(tx);
+}
+
+// --- Für die Synchronisierung -----------------------------------------------
+
+export async function outbox() {
+  return all('outbox');
+}
+
+// Entfernt erledigte Einträge, aber nur, wenn sie seit dem Hochladen nicht erneut geändert wurden
+export async function outboxErledigt(eintraege) {
+  const db = await open();
+  const tx = db.transaction('outbox', 'readwrite');
+  const os = tx.objectStore('outbox');
+  for (const e of eintraege) {
+    const r = os.get(e.key);
+    r.onsuccess = () => { if (r.result && r.result.seq === e.seq) os.delete(e.key); };
+  }
+  await done(tx);
+}
+
+// Übernimmt einen Datensatz vom Server, ohne ihn erneut zum Hochladen vorzumerken
+export async function vomServer(store, id, wert) {
+  const db = await open();
+  const tx = db.transaction([store], 'readwrite');
+  const os = tx.objectStore(store);
+  if (wert === null) os.delete(id);
+  else if (store === 'settings') {
+    // Rechnungszähler nie zurückdrehen: je Jahr den höheren Stand behalten
+    const r = os.get(id);
+    r.onsuccess = () => {
+      const alt = r.result;
+      const zaehler = { ...(wert.zaehler || {}) };
+      if (alt && alt.zaehler) for (const [j, n] of Object.entries(alt.zaehler)) zaehler[j] = Math.max(n, zaehler[j] || 0);
+      os.put({ ...wert, zaehler });
+    };
+  } else os.put(wert);
+  await done(tx);
+}
+
+export async function dateiVomServer(fileId, bytes) {
+  const db = await open();
+  const tx = db.transaction('files', 'readwrite');
+  tx.objectStore('files').put({ id: fileId, bytes });
+  await done(tx);
+}
+
+// Alles Lokale zum Hochladen vormerken (außer den Schlüsseln, die der Server schon hat)
+export async function allesVormerken(ausser = new Set()) {
+  const db = await open();
+  const stores = [...SYNC_STORES, 'files'];
+  const daten = {};
+  for (const st of stores) daten[st] = await reqP(db.transaction(st).objectStore(st).getAllKeys());
+  const tx = db.transaction('outbox', 'readwrite');
+  const os = tx.objectStore('outbox');
+  for (const st of stores) for (const id of daten[st]) {
+    if (!ausser.has(okey(st, id))) os.put({ key: okey(st, id), store: st, id, op: 'put', seq: Date.now() + Math.random() });
+  }
+  await done(tx);
+}
+
+export async function outboxLeeren() {
+  const db = await open();
+  const tx = db.transaction('outbox', 'readwrite');
+  tx.objectStore('outbox').clear();
   await done(tx);
 }
 
@@ -111,35 +222,62 @@ export function firmaVollstaendig(s) {
 // --- Rechnung festschreiben -------------------------------------------------
 // Vergibt die nächste Nummer, speichert Rechnung + PDF + Prüfsumme in EINER Transaktion.
 // Danach ist die Rechnung unveränderbar; nur Zahlungsstatus und Storno-Vermerk ändern sich.
+// nummerReservieren(jahr, mindestens) fragt bei eingeschalteter Synchronisierung den Server,
+// damit zwei Geräte nie dieselbe Nummer vergeben. Ohne Netz wird lokal weitergezählt.
 
-export async function festschreiben(entwurf, erzeugeDateien) {
+export async function festschreiben(entwurf, erzeugeDateien, nummerReservieren) {
   const db = await open();
   const s = await einstellungen();
   const jahr = Number(entwurf.datum.slice(0, 4));
-  const lfd = (s.zaehler[jahr] || 0) + 1;
+  const lokalLfd = (s.zaehler[jahr] || 0) + 1;
+  let lfd = lokalLfd;
+  let offline = false;
+  if (nummerReservieren) {
+    try {
+      const n = await nummerReservieren(jahr, lokalLfd - 1);
+      if (Number.isInteger(n) && n > 0) lfd = Math.max(n, lokalLfd);
+    } catch (e) {
+      offline = true;
+      console.warn('Nummer konnte nicht beim Server reserviert werden, zähle lokal weiter', e);
+    }
+  }
   const nr = formatNummer(s.prefix || 'RE', jahr, lfd);
-  const inv = { ...entwurf, id: uid(), nr, createdAt: new Date().toISOString() };
+  const inv = { ...entwurf, id: uid(), nr, createdAt: new Date().toISOString(), nummerOffline: offline || undefined };
 
   // PDF (und ggf. XML) vor der Transaktion erzeugen – IndexedDB-Transaktionen dürfen nicht auf async warten
   const dateien = await erzeugeDateien(inv, s);
   inv.pdfHash = dateien.pdfHash;
   inv.hatXml = !!dateien.xml;
 
-  const tx = db.transaction(['settings', 'invoices', 'files', 'log'], 'readwrite');
-  const settingsStore = tx.objectStore('settings');
-  const neu = { ...s, zaehler: { ...s.zaehler, [jahr]: lfd } };
-  settingsStore.put(neu);
+  const logEintrag = { id: uid(), ts: new Date().toISOString(), aktion: 'rechnung_erstellt', ref: nr, details: { brutto: inv.summen.brutto, sha256: inv.pdfHash } };
+  const tx = db.transaction(['settings', 'invoices', 'files', 'log', 'outbox'], 'readwrite');
+  tx.objectStore('settings').put({ ...s, zaehler: { ...s.zaehler, [jahr]: lfd } });
   tx.objectStore('invoices').add(inv);
   tx.objectStore('files').put({ id: inv.id + ':pdf', bytes: dateien.pdf });
   if (dateien.xml) tx.objectStore('files').put({ id: inv.id + ':xml', bytes: dateien.xml });
-  tx.objectStore('log').add({ ts: new Date().toISOString(), aktion: 'rechnung_erstellt', ref: nr, details: { brutto: inv.summen.brutto, sha256: inv.pdfHash } });
+  tx.objectStore('log').add(logEintrag);
+  vormerken(tx, 'settings', 'settings', 'put');
+  vormerken(tx, 'files', inv.id + ':pdf', 'put');
+  if (dateien.xml) vormerken(tx, 'files', inv.id + ':xml', 'put');
+  vormerken(tx, 'invoices', inv.id, 'put');
+  vormerken(tx, 'log', logEintrag.id, 'put');
   await done(tx);
+  gemeldet();
   return inv;
 }
 
+// Lädt eine Datei (PDF/XML). Fehlt sie auf diesem Gerät, wird sie – falls möglich – vom Server geholt.
 export async function datei(invId, art) {
-  const f = await get('files', invId + ':' + art);
-  return f ? f.bytes : null;
+  const id = invId + ':' + art;
+  const f = await get('files', id);
+  if (f) return f.bytes;
+  if (dateiNachladen) {
+    try {
+      const bytes = await dateiNachladen(id);
+      if (bytes) { await dateiVomServer(id, bytes); return bytes; }
+    } catch (e) { console.warn('Datei konnte nicht geladen werden', id, e); }
+  }
+  return null;
 }
 
 export async function zahlungSetzen(inv, art, datum) {
@@ -196,8 +334,8 @@ function fromB64(b64) {
 }
 
 export async function sicherungErstellen() {
-  const daten = { app: 'hufschmied-rechnungen', version: 1, erstellt: new Date().toISOString(), stores: {} };
-  for (const st of STORES) {
+  const daten = { app: 'hufschmied-rechnungen', version: 2, erstellt: new Date().toISOString(), stores: {} };
+  for (const st of BACKUP_STORES) {
     let rows = await all(st);
     if (st === 'files') rows = rows.map((r) => ({ id: r.id, b64: toB64(r.bytes) }));
     daten.stores[st] = rows;
@@ -211,14 +349,17 @@ export async function sicherungEinspielen(text) {
   const daten = JSON.parse(text);
   if (daten.app !== 'hufschmied-rechnungen' || !daten.stores) throw new Error('Das ist keine Datensicherung dieser App.');
   const db = await open();
-  const tx = db.transaction(STORES, 'readwrite');
-  for (const st of STORES) {
+  const tx = db.transaction(BACKUP_STORES, 'readwrite');
+  for (const st of BACKUP_STORES) {
     const os = tx.objectStore(st);
     os.clear();
     for (const row of daten.stores[st] || []) {
       if (st === 'files') os.put({ id: row.id, bytes: fromB64(row.b64) });
+      else if (st === 'log') os.put(row.id && typeof row.id === 'string' ? row : { ...row, id: uid() });
       else os.put(row);
     }
   }
   await done(tx);
+  if (syncAktiv) await allesVormerken();
+  gemeldet();
 }

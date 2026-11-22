@@ -7,9 +7,10 @@ import {
   statusVon, zeitraumGrenzen, uid, EINHEITEN, STEUERSAETZE, dateiname
 } from './logic.js';
 import { erzeugeDateien, exportZip } from './export.js';
+import * as konto from './konto.js';
 
 const html = htm.bind(h);
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 
 // ---------------------------------------------------------------------------
 // Icons (Strich-Icons, 24er Raster)
@@ -30,7 +31,8 @@ const ICON = {
   building: 'M4 21V5l8-2v18 M12 9h8v12 M8 8h.01 M8 12h.01 M8 16h.01 M16 13h.01 M16 17h.01',
   safe: 'M4 5h16v14H4z M12 9a3 3 0 100 6 3 3 0 000-6z M4 9h2 M4 15h2',
   eye: 'M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z M12 9a3 3 0 100 6 3 3 0 000-6z',
-  copy: 'M9 9h11v11H9z M5 15V4h11'
+  copy: 'M9 9h11v11H9z M5 15V4h11',
+  cloud: 'M7 18h10a4 4 0 00.5-7.97A6 6 0 006.1 9.1 4.5 4.5 0 007 18z'
 };
 const Icon = ({ n, w = 2 }) => html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width=${w} stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[n].split(' M').map((d, i) => html`<path d=${i ? 'M' + d : d}></path>`)}</svg>`;
 
@@ -161,14 +163,16 @@ function Uebersicht({ ctx }) {
   const wochentag = new Date().toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
 
   return html`<div class="screen">
-    <div class="head-big"><div><p>${wochentag}</p><h1>Übersicht</h1></div></div>
+    <div class="head-big"><div><p>${wochentag}</p><h1>Übersicht</h1></div>
+      ${ctx.sync.angemeldet && html`<button class="sync-pill" data-status=${ctx.sync.status} onClick=${() => go({ name: 'sync' })}><${Icon} n="cloud" />${syncKurz(ctx.sync)}</button>`}
+    </div>
     <main class="body with-tabs">
       ${!db.firmaVollstaendig(s) && html`<div class="note">
         <b>Willkommen!</b> Bevor die erste Rechnung rausgeht, brauchen wir deine Firmendaten: Name, Adresse, Steuernummer und Bankverbindung.
         <div><button class="btn small" onClick=${() => go({ name: 'firma' })}>Firmendaten eintragen</button></div>
       </div>`}
       ${sicherungAlt && html`<div class="note warn">
-        Die letzte Datensicherung ist ${s.letzteSicherung ? 'über 30 Tage her' : 'noch nicht gemacht'}. Die Daten liegen nur auf diesem iPhone.
+        Die letzte Datensicherung ist ${s.letzteSicherung ? 'über 30 Tage her' : 'noch nicht gemacht'}. ${ctx.sync.angemeldet ? 'Supabase (kostenloser Plan) macht keine eigenen Backups.' : 'Die Daten liegen nur auf diesem Gerät.'}
         <div><button class="btn small" onClick=${() => go({ name: 'sicherung' })}>Jetzt sichern</button></div>
       </div>`}
       <div class="stats">
@@ -269,7 +273,7 @@ function RechnungDetail({ ctx, id }) {
         positionen, rabatt, summen: berechne(positionen, rabatt), zahlart: inv.zahlart,
         status: 'offen', bezugNr: inv.nr, bezugDatum: inv.datum
       };
-      const storno = await db.festschreiben(entwurf, erzeugeDateien);
+      const storno = await db.festschreiben(entwurf, erzeugeDateien, konto.nummerReservierer());
       await db.stornoVermerken(inv, storno);
       await reload();
       go({ name: 'rechnung', id: storno.id }, false, true);
@@ -388,7 +392,7 @@ function NeueRechnung({ ctx, kundeId: startKunde, pferdId }) {
         positionen, rabatt, summen, zahlart,
         status: bar ? 'bezahlt' : 'offen', bezahltArt: bar ? 'bar' : null, bezahltAm: bar ? heute : null
       };
-      const inv = await db.festschreiben(entwurf, erzeugeDateien);
+      const inv = await db.festschreiben(entwurf, erzeugeDateien, konto.nummerReservierer());
       await db.termineNachtragen(entwurf.pferdIds, leistungsdatum);
       await reload();
       const pdf = await db.datei(inv.id, 'pdf');
@@ -698,6 +702,7 @@ function Mehr({ ctx }) {
     ['leistungen', 'Leistungen und Preise', `${data.services.filter((x) => x.aktiv !== false).length} aktiv`, 'tag'],
     ['firma', 'Firmendaten', db.firmaVollstaendig(data.settings) ? 'vollständig' : 'unvollständig', 'building'],
     ['export', 'Export für den Steuerberater', 'Excel-Liste und PDFs als ZIP', 'download'],
+    ['sync', 'Synchronisierung', syncText(ctx.sync), 'cloud'],
     ['sicherung', 'Datensicherung', data.settings.letzteSicherung ? 'zuletzt ' + deDatum(data.settings.letzteSicherung) : 'noch nie', 'safe']
   ];
   return html`<div class="screen">
@@ -710,7 +715,7 @@ function Mehr({ ctx }) {
           <${Icon} n="chevron" />
         </button>`)}
       </div>
-      <p class="small-print">Version ${VERSION}. Alle Daten liegen nur auf diesem Gerät. Bitte regelmäßig eine Datensicherung machen und an einem sicheren Ort ablegen.</p>
+      <p class="small-print">Version ${VERSION}. Bitte regelmäßig eine Datensicherung machen und an einem sicheren Ort ablegen.</p>
     </main>
   </div>`;
 }
@@ -891,7 +896,7 @@ function Sicherung({ ctx }) {
   return html`<div class="screen">
     <${Head} title="Datensicherung" onBack=${back} />
     <main class="body">
-      <p style="font-size:15px;color:var(--ink2)">Alle Kunden, Rechnungen und PDFs liegen nur auf diesem iPhone. Geht es verloren, sind die Daten weg. Rechnungen müssen 8 Jahre aufbewahrt werden. Speichere die Sicherung deshalb regelmäßig, zum Beispiel in iCloud Drive oder per Mail an dich selbst.</p>
+      <p style="font-size:15px;color:var(--ink2)">Ohne Synchronisierung liegen alle Daten nur auf diesem Gerät. Mit Synchronisierung liegen sie zusätzlich verschlüsselt bei Supabase, der kostenlose Plan macht dort aber keine Backups. Rechnungen müssen 8 Jahre aufbewahrt werden. Speichere die Sicherung deshalb regelmäßig, zum Beispiel in iCloud Drive oder per Mail an dich selbst.</p>
       <div class="card pad">
         <div class="kv"><span>Letzte Sicherung</span><b>${data.settings.letzteSicherung ? deDatum(data.settings.letzteSicherung) : 'noch nie'}</b></div>
         <div class="kv muted"><span>Rechnungen</span><span>${data.invoices.length}</span></div>
@@ -910,6 +915,96 @@ function Sicherung({ ctx }) {
   </div>`;
 }
 
+function uhrzeit(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const heute = new Date().toDateString() === d.toDateString();
+  return heute ? d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : d.toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+function syncKurz(z) {
+  if (z.status === 'laeuft') return 'Gleicht ab …';
+  if (z.status === 'offline') return z.wartend ? `Offline · ${z.wartend} warten` : 'Offline';
+  if (z.status === 'fehler') return 'Abgleich gestört';
+  if (z.status === 'abgemeldet') return 'Abgemeldet';
+  return z.letzterLauf ? `Abgeglichen ${uhrzeit(z.letzterLauf)}` : 'Bereit';
+}
+function syncText(z) {
+  if (!z.angemeldet) return z.status === 'abgemeldet' ? 'abgemeldet – bitte neu anmelden' : 'aus';
+  return syncKurz(z);
+}
+
+function Synchronisierung({ ctx }) {
+  const { back, toast, sync: z } = ctx;
+  const [verb, setVerb] = useState(null);
+  const [url, setUrl] = useState('');
+  const [anon, setAnon] = useState('');
+  const [email, setEmail] = useState(z.email || '');
+  const [pw, setPw] = useState('');
+  const [pw2, setPw2] = useState('');
+  const [neu, setNeu] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [fehler, setFehler] = useState(null);
+  const [aendern, setAendern] = useState(false);
+  useEffect(() => { konto.verbindung().then((v) => { setVerb(v); setUrl(v.url || ''); setAnon(v.anon || ''); }); }, [z.konfiguriert]);
+  if (!verb) return html`<div class="screen"><${Head} title="Synchronisierung" onBack=${back} /></div>`;
+  const konfiguriert = !!(verb.url && verb.anon) && !aendern;
+
+  const verbindungSpeichern = async () => {
+    await konto.verbindungSpeichern(url, anon);
+    setVerb(await konto.verbindung());
+    setAendern(false);
+  };
+  const anmelden = async () => {
+    setFehler(null);
+    if (neu && pw !== pw2) { setFehler('Die Passwörter stimmen nicht überein.'); return; }
+    if (neu && pw.length < 10) { setFehler('Bitte ein Passwort mit mindestens 10 Zeichen wählen.'); return; }
+    setBusy(true);
+    try {
+      await konto.anmelden(email, pw, neu);
+      setPw(''); setPw2('');
+      toast('Angemeldet – Daten werden abgeglichen');
+    } catch (e) {
+      setFehler(e.message);
+    } finally { setBusy(false); }
+  };
+
+  return html`<div class="screen">
+    <${Head} title="Synchronisierung" onBack=${back} />
+    <main class="body">
+      ${z.angemeldet ? html`
+        <div class="card pad">
+          <div class="kv"><span>Konto</span><b style="overflow-wrap:anywhere;text-align:right">${z.email}</b></div>
+          <div class="kv muted"><span>Status</span><span>${syncKurz(z)}</span></div>
+          <div class="kv muted"><span>Noch nicht hochgeladen</span><span>${z.wartend} Änderungen</span></div>
+        </div>
+        ${z.status === 'fehler' && html`<div class="note bad">Der letzte Abgleich hat nicht geklappt: ${z.fehler}</div>`}
+        <button class="btn block" disabled=${z.status === 'laeuft'} onClick=${() => konto.abgleichen()}>Jetzt abgleichen</button>
+        <p class="small-print" style="font-size:14px">Die App gleicht automatisch ab: beim Öffnen, kurz nach jeder Änderung und jede Minute. Ohne Netz wird gespeichert und später nachgeholt. Alle Daten werden auf dem Gerät verschlüsselt, bevor sie den Server erreichen.</p>
+        <button class="btn danger block" onClick=${async () => { if (confirm('Auf diesem Gerät abmelden? Die Daten bleiben auf dem Gerät, werden aber nicht mehr abgeglichen.')) { await konto.abmelden(); toast('Abgemeldet'); } }}>Auf diesem Gerät abmelden</button>
+      ` : !konfiguriert ? html`
+        <p style="font-size:15px;color:var(--ink2)">Damit iPhone und PC dieselben Daten haben, werden sie verschlüsselt über Supabase abgeglichen. Trage hier die Verbindungsdaten deines Supabase-Projekts ein. Du findest sie in Supabase unter <b>Project Settings → API Keys</b> bzw. <b>Data API</b>.</p>
+        <${Field} label="Project URL" hint="z. B. https://abcdefgh.supabase.co"><input type="url" autocapitalize="off" value=${url} onInput=${(e) => setUrl(e.target.value)} /><//>
+        <${Field} label="Publishable key (oder anon public key)"><textarea style="min-height:90px;font-size:13px" autocapitalize="off" value=${anon} onInput=${(e) => setAnon(e.target.value)}></textarea><//>
+        <button class="btn block" disabled=${!/^(https:\/\/.+|http:\/\/(localhost|127\.0\.0\.1)(:\d+)?)/.test(url.trim()) || anon.trim().length < 20} onClick=${verbindungSpeichern}>Weiter</button>
+      ` : html`
+        ${z.status === 'abgemeldet' && html`<div class="note warn">Die Anmeldung ist abgelaufen. Bitte neu anmelden.</div>`}
+        <div class="chips">
+          <button class="chip" aria-pressed=${!neu ? 'true' : 'false'} onClick=${() => setNeu(false)}>Anmelden</button>
+          <button class="chip" aria-pressed=${neu ? 'true' : 'false'} onClick=${() => setNeu(true)}>Neues Konto</button>
+        </div>
+        <${Field} label="E-Mail"><input type="email" autocapitalize="off" autocomplete="username" value=${email} onInput=${(e) => setEmail(e.target.value)} /><//>
+        <${Field} label="Passwort"><input type="password" autocomplete=${neu ? 'new-password' : 'current-password'} value=${pw} onInput=${(e) => setPw(e.target.value)} /><//>
+        ${neu && html`<${Field} label="Passwort wiederholen"><input type="password" autocomplete="new-password" value=${pw2} onInput=${(e) => setPw2(e.target.value)} /><//>`}
+        <div class="note warn"><b>Wichtig:</b> Aus dem Passwort wird der Schlüssel für die Verschlüsselung erzeugt. Es kann nicht zurückgesetzt werden. Wer es vergisst, kommt nicht mehr an die Daten auf dem Server. Bitte sicher aufschreiben, zum Beispiel im iPhone-Schlüsselbund.</div>
+        ${fehler && html`<div class="note bad">${fehler}</div>`}
+        <button class="btn block" disabled=${busy || !email.includes('@') || !pw} onClick=${anmelden}>${busy ? 'Einen Moment …' : neu ? 'Konto anlegen' : 'Anmelden'}</button>
+        <p class="small-print" style="font-size:14px">Auf dem ersten Gerät „Neues Konto“ wählen, auf allen weiteren Geräten mit denselben Daten „Anmelden“.</p>
+        ${!verb.ausConfig && html`<button class="btn ghost" onClick=${() => setAendern(true)}>Verbindung ändern</button>`}
+      `}
+    </main>
+  </div>`;
+}
+
 // ---------------------------------------------------------------------------
 // App & Navigation
 
@@ -917,6 +1012,7 @@ function App() {
   const [data, setData] = useState(null);
   const [stack, setStack] = useState([{ name: 'tab', tab: 'home' }]);
   const [toastMsg, setToastMsg] = useState(null);
+  const [syncZustand, setSyncZustand] = useState(konto.zustandJetzt());
   const toastTimer = useRef(null);
 
   const reload = async () => {
@@ -928,6 +1024,9 @@ function App() {
   useEffect(() => {
     reload();
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+    const ab = konto.onZustand(setSyncZustand);
+    konto.start(() => reload()).catch((e) => console.error('Sync-Start', e));
+    return ab;
   }, []);
 
   const go = (route, root = false, replace = false) => {
@@ -945,7 +1044,7 @@ function App() {
   };
 
   if (!data) return html`<p class="empty" style="padding-top:40vh">Lädt …</p>`;
-  const ctx = { data, reload, go, back, toast };
+  const ctx = { data, reload, go, back, toast, sync: syncZustand };
   const ansicht = (r) => {
     switch (r.name) {
       case 'tab':
@@ -964,6 +1063,7 @@ function App() {
       case 'firma': return html`<${Firma} ctx=${ctx} />`;
       case 'export': return html`<${Export} ctx=${ctx} />`;
       case 'sicherung': return html`<${Sicherung} ctx=${ctx} />`;
+      case 'sync': return html`<${Synchronisierung} ctx=${ctx} />`;
       default: return html`<${Uebersicht} ctx=${ctx} />`;
     }
   };
