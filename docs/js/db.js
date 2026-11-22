@@ -3,8 +3,8 @@
 import { uid, formatNummer, periodeVon, heuteISO } from './logic.js';
 
 let DB_NAME = 'hufschmied-rechnungen';
-const DB_VERSION = 2;
-export const SYNC_STORES = ['settings', 'customers', 'horses', 'services', 'invoices', 'log'];
+const DB_VERSION = 3;
+export const SYNC_STORES = ['settings', 'customers', 'horses', 'services', 'invoices', 'expenses', 'log'];
 const BACKUP_STORES = [...SYNC_STORES, 'files'];
 
 let dbPromise = null;
@@ -47,6 +47,10 @@ function open() {
           inv.deleteIndex('nr');
           inv.createIndex('nr', 'nr', { unique: false });
         }
+      }
+      if (alt < 3) {
+        // Eingangsrechnungen (Belege von Lieferanten) mit beliebig vielen Anhängen
+        db.createObjectStore('expenses', { keyPath: 'id' }).createIndex('datum', 'datum');
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -316,6 +320,34 @@ export async function termineNachtragen(pferdIds, datum) {
     const p = await get('horses', id);
     if (p && (!p.letzterTermin || p.letzterTermin < datum)) await put('horses', { ...p, letzterTermin: datum });
   }
+}
+
+// --- Eingangsrechnungen -----------------------------------------------------
+// Ein Beleg: { id, datum, lieferant, nummer, kategorie, netto, steuer, brutto, steuern[], zahlart, notiz,
+//              anhaenge: [{ id, name, typ, groesse, art: 'foto'|'pdf'|'xml'|'datei' }], quelle, createdAt }
+// Die Dateien liegen im Store 'files' unter `${beleg.id}:${anhang.id}` und werden unverändert synchronisiert.
+
+export async function belegSpeichern(beleg, neueDateien = []) {
+  const db = await open();
+  const neu = !(await get('expenses', beleg.id));
+  const tx = db.transaction(['expenses', 'files', 'log', 'outbox'], 'readwrite');
+  for (const d of neueDateien) {
+    tx.objectStore('files').put({ id: beleg.id + ':' + d.id, bytes: d.bytes });
+    vormerken(tx, 'files', beleg.id + ':' + d.id, 'put');
+  }
+  tx.objectStore('expenses').put(beleg);
+  vormerken(tx, 'expenses', beleg.id, 'put');
+  const logEintrag = { id: uid(), ts: new Date().toISOString(), aktion: neu ? 'beleg_erfasst' : 'beleg_geaendert', ref: beleg.id, details: { lieferant: beleg.lieferant, brutto: beleg.brutto, anhaenge: beleg.anhaenge.length } };
+  tx.objectStore('log').add(logEintrag);
+  vormerken(tx, 'log', logEintrag.id, 'put');
+  await done(tx);
+  gemeldet();
+  return beleg;
+}
+
+export async function belegLoeschen(beleg) {
+  // Nicht endgültig löschen (Aufbewahrungspflicht): als gelöscht markieren, Daten und Dateien bleiben erhalten.
+  return belegSpeichern({ ...beleg, geloescht: true, geloeschtAm: new Date().toISOString() });
 }
 
 // --- Datensicherung ---------------------------------------------------------

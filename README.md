@@ -15,7 +15,8 @@ Die App läuft im Browser und speichert alles auf dem Gerät. Mit der Synchronis
 - Offene, überfällige und bezahlte Rechnungen; „per Bank bezahlt am“ mit Datum
 - Fortlaufende Rechnungsnummern mit eigenem Nummernkreis pro Monat (RE-2026-01-0001, RE-2026-01-0002 … im Februar RE-2026-02-0001). Erstellte Rechnungen sind festgeschrieben (Prüfsumme SHA-256), Korrekturen laufen über eine Stornorechnung.
 - Übersicht der Pferde, die in den nächsten 14 Tagen fällig sind
-- Export für den Steuerberater für einen Monat, mehrere Monate (von–bis), ein Quartal oder ein Jahr: ZIP mit Excel-Liste und allen PDFs. Jede Zeile der Tabelle hat einen Link auf die passende PDF.
+- Export für den Steuerberater für einen Monat, mehrere Monate (von–bis), ein Quartal oder ein Jahr: ZIP mit einer Excel-Datei (Blätter „Übersicht“ mit Umsatzsteuer/Vorsteuer, „Rechnungen“, „Eingangsrechnungen“) und allen PDFs, Fotos und E-Rechnungen. Jede Zeile hat einen Link auf die passende Datei.
+- Eingangsrechnungen (Reiter „Belege“): Rechnung fotografieren oder PDF/XML auswählen, mehrere Dateien pro Beleg. E-Rechnungen (XRechnung als XML oder ZUGFeRD-PDF) werden automatisch ausgelesen: Lieferant, Datum, Nummer, Beträge, Vorsteuer. Fotos werden verkleinert, PDFs und XML bleiben unverändert im Original.
 - Datensicherung als Datei und Wiederherstellung, z. B. auf einem neuen iPhone
 - Funktioniert nach dem ersten Öffnen auch ohne Internet
 - Abgleich zwischen iPhone und PC mit Ende-zu-Ende-Verschlüsselung (AES-256). Ohne Netz wird lokal gespeichert und später abgeglichen. Rechnungsnummern vergibt der Server, damit zwei Geräte nie dieselbe Nummer nehmen.
@@ -65,6 +66,8 @@ Ohne Synchronisierung liegen die Daten nur auf dem Gerät. Mit Synchronisierung 
 - **E-Rechnung:** Die XML-Datei folgt EN 16931 (CII), ist aber noch nicht mit einem offiziellen Validator geprüft. Vor der ersten echten Rechnung an einen Geschäftskunden eine Test-XML prüfen lassen, z. B. mit dem Mustang-Validator oder dem Prüftool des Steuerberaters. Die PDF ist kein zertifiziertes PDF/A-3. Maßgeblich ist die mitgeschickte XML-Datei.
 - **Steuersatz:** Voreingestellt sind 19 %. Ob einzelne Leistungen anders zu versteuern sind, entscheidet der Steuerberater.
 - **Export-Format:** Falls der Steuerberater DATEV braucht, kann das später ergänzt werden.
+- **Papierbelege:** Ein Foto ersetzt das Papier nur, wenn das Verfahren dokumentiert ist (ersetzendes Scannen nach GoBD). Bis das geklärt ist, Papierbelege zusätzlich aufbewahren. E-Rechnungen von Lieferanten immer als Datei (XML/ZUGFeRD) hochladen, nicht als Foto.
+- **Speicherplatz:** Ein Foto hat nach dem Verkleinern etwa 100–500 KB. Der kostenlose Supabase-Plan hat 1 GB Dateispeicher, das reicht für einige tausend Belege.
 
 ## Neue Version veröffentlichen
 
@@ -77,6 +80,7 @@ cd dev
 npm install
 npm test                    # Rechenlogik, PDF, E-Rechnung, Export
 node tests/sync.mjs         # Abgleich zwischen zwei Geräten (nachgebauter Server)
+node tests/einvoice_in.mjs  # Einlesen von XRechnung/ZUGFeRD (nach npm test)
 python3 tests/e2e.py        # kompletter Ablauf im Browser (Playwright)
 python3 tests/e2e_sync.py   # iPhone + PC im Browser gegen nachgebauten Supabase-Server
 ```

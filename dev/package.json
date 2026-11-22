@@ -15,5 +15,8 @@
     "xlsx": "^0.18.5"
   },
   "private": true,
-  "type": "module"
+  "type": "module",
+  "devDependencies": {
+    "@xmldom/xmldom": "^0.9.12"
+  }
 }

@@ -12,8 +12,14 @@ export async function erzeugeDateien(inv, s) {
   return { pdf, xml: xml ? new TextEncoder().encode(xml) : null, pdfHash: await sha256Hex(pdf) };
 }
 
-// rechnungen: Liste der Rechnungen im Zeitraum, ladeDatei(inv, 'pdf'|'xml') -> Uint8Array
-export async function exportZip(rechnungen, zeitraum, s, ladeDatei) {
+const ENDUNG = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/heic': 'heic', 'image/webp': 'webp', 'application/pdf': 'pdf', 'application/xml': 'xml', 'text/xml': 'xml' };
+const kurzname = (t) => String(t || 'Beleg').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/ß/g, 'ss')
+  .replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'Beleg';
+const ZAHLART = { ueberweisung: 'Überweisung', lastschrift: 'Lastschrift', karte: 'Karte', bar: 'bar' };
+
+// rechnungen: Ausgangsrechnungen im Zeitraum, belege: Eingangsrechnungen im Zeitraum,
+// ladeDatei(objekt, schluessel) -> Uint8Array  (Rechnung: 'pdf'|'xml', Beleg: Anhang-ID)
+export async function exportZip(rechnungen, zeitraum, s, ladeDatei, belege = []) {
   const XLSX = globalThis.XLSX;
   const JSZip = globalThis.JSZip;
   const zip = new JSZip();
@@ -75,17 +81,79 @@ export async function exportZip(rechnungen, zeitraum, s, ladeDatei) {
   ws['!cols'] = [14, 14, 13, 13, 28, 10, 11, 10, 11, 10, 12, 11, 12, 12, 11, 11, 14, 9].map((w) => ({ wch: w }));
   ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: Math.max(n, 1), c: 17 } }) };
 
+  // --- Eingangsrechnungen ---
+  const eOrdner = zip.folder('Eingangsrechnungen');
+  const bSortiert = [...belege].sort((a, b) => (a.datum + (a.createdAt || '')).localeCompare(b.datum + (b.createdAt || '')));
+  const maxAnh = Math.max(1, ...bSortiert.map((b) => b.anhaenge.length));
+  const eKopf = ['Lfd.', 'Rechnungsdatum', 'Lieferant', 'Rechnungsnr.', 'Kategorie', 'Netto', 'Vorsteuer', 'Brutto', 'Steuersatz', 'Bezahlt per', 'Quelle', 'Notiz'];
+  for (let i = 1; i <= maxAnh; i++) eKopf.push(maxAnh === 1 ? 'Datei' : `Datei ${i}`);
+  const eZeilen = [eKopf];
+  const links = [];
+  let nrB = 0;
+  for (const b of bSortiert) {
+    nrB++;
+    const basis = `E${String(nrB).padStart(3, '0')}_${b.datum}_${kurzname(b.lieferant)}`;
+    const zeile = [nrB, xDatum(b.datum), b.lieferant, b.nummer || '', b.kategorie || '',
+      (b.netto || 0) / 100, (b.steuer || 0) / 100, (b.brutto || 0) / 100,
+      (b.steuern || []).map((t) => t.satz + ' %').join(' / '), ZAHLART[b.zahlart] || '',
+      b.quelle === 'e-rechnung' ? 'E-Rechnung' : b.anhaenge.length ? 'Foto/Datei' : 'ohne Beleg', b.notiz || ''];
+    b.anhaenge.forEach((a, i) => {
+      const name = `${basis}${b.anhaenge.length > 1 ? '_' + (i + 1) : ''}.${ENDUNG[a.typ] || (a.name.split('.').pop() || 'bin').toLowerCase()}`;
+      links.push({ r: eZeilen.length, c: eKopf.length - maxAnh + i, ziel: `Eingangsrechnungen/${name}`, text: a.art === 'xrechnung' || a.art === 'xml' ? 'XML öffnen' : 'öffnen' });
+      zeile.push('');
+      eOrdner.file(name, ladeDatei(b, a.id).then((bytes) => bytes || new Uint8Array()));
+    });
+    eZeilen.push(zeile);
+  }
+  for (const l of links) eZeilen[l.r][l.c] = l.text;
+  const eSumme = (c) => bSortiert.reduce((a, b, i) => a + (eZeilen[i + 1][c] || 0), 0);
+  eZeilen.push([]);
+  eZeilen.push(['Summe', '', `${bSortiert.length} Belege`, '', '', eSumme(5), eSumme(6), eSumme(7)]);
+  const ews = XLSX.utils.aoa_to_sheet(eZeilen, { cellDates: false });
+  for (let r = 1; r < eZeilen.length; r++) {
+    for (let c = 5; c <= 7; c++) { const ref = XLSX.utils.encode_cell({ r, c }); if (ews[ref] && typeof ews[ref].v === 'number') ews[ref].z = geld; }
+    const ref = XLSX.utils.encode_cell({ r, c: 1 }); if (ews[ref] && ews[ref].t === 'n') ews[ref].z = 'dd.mm.yyyy';
+  }
+  for (const l of links) ews[XLSX.utils.encode_cell({ r: l.r, c: l.c })].l = { Target: l.ziel, Tooltip: 'Beleg öffnen' };
+  ews['!cols'] = [5, 13, 28, 16, 20, 11, 11, 11, 10, 12, 11, 24, ...Array(maxAnh).fill(10)].map((w) => ({ wch: w }));
+  ews['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: Math.max(bSortiert.length, 1), c: eKopf.length - 1 } }) };
+
+  // --- Übersicht: Umsatzsteuer und Vorsteuer, Ausgaben nach Kategorie ---
+  const aus = sortiert.reduce((a, inv) => ({ netto: a.netto + inv.summen.netto, steuer: a.steuer + inv.summen.steuer, brutto: a.brutto + inv.summen.brutto }), { netto: 0, steuer: 0, brutto: 0 });
+  const ein = bSortiert.reduce((a, b) => ({ netto: a.netto + (b.netto || 0), steuer: a.steuer + (b.steuer || 0), brutto: a.brutto + (b.brutto || 0) }), { netto: 0, steuer: 0, brutto: 0 });
+  const kat = {};
+  for (const b of bSortiert) { const k = b.kategorie || 'ohne Kategorie'; kat[k] = kat[k] || { n: 0, netto: 0, steuer: 0, brutto: 0 }; kat[k].n++; kat[k].netto += b.netto || 0; kat[k].steuer += b.steuer || 0; kat[k].brutto += b.brutto || 0; }
+  const ue = [
+    [`Übersicht ${zeitraum.label}`], [s.firma.name], [],
+    ['', 'Anzahl', 'Netto', 'Umsatzsteuer / Vorsteuer', 'Brutto'],
+    ['Ausgangsrechnungen (Einnahmen)', n, aus.netto / 100, aus.steuer / 100, aus.brutto / 100],
+    ['Eingangsrechnungen (Ausgaben)', bSortiert.length, ein.netto / 100, ein.steuer / 100, ein.brutto / 100],
+    ['Umsatzsteuer abzüglich Vorsteuer', '', '', (aus.steuer - ein.steuer) / 100, ''],
+    [], ['Ausgaben nach Kategorie', 'Anzahl', 'Netto', 'Vorsteuer', 'Brutto'],
+    ...Object.entries(kat).sort((a, b) => b[1].brutto - a[1].brutto).map(([k, v]) => [k, v.n, v.netto / 100, v.steuer / 100, v.brutto / 100]),
+    [], ['Hinweis: Vorläufige Zusammenstellung aus der App. Maßgeblich sind die einzelnen Belege.']
+  ];
+  const uws = XLSX.utils.aoa_to_sheet(ue);
+  for (let r = 0; r < ue.length; r++) for (let c = 2; c <= 4; c++) { const ref = XLSX.utils.encode_cell({ r, c }); if (uws[ref] && typeof uws[ref].v === 'number') uws[ref].z = geld; }
+  uws['!cols'] = [{ wch: 34 }, { wch: 9 }, { wch: 13 }, { wch: 24 }, { wch: 13 }];
+
   const wb = XLSX.utils.book_new();
-  wb.Props = { Title: `Rechnungen ${zeitraum.label}`, Author: s.firma.name };
+  wb.Props = { Title: `Rechnungen und Belege ${zeitraum.label}`, Author: s.firma.name };
+  XLSX.utils.book_append_sheet(wb, uws, 'Übersicht');
   XLSX.utils.book_append_sheet(wb, ws, 'Rechnungen');
+  XLSX.utils.book_append_sheet(wb, ews, 'Eingangsrechnungen');
   const xlsx = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
   zip.file(`Rechnungsliste ${zeitraum.datei}.xlsx`, xlsx);
   zip.file('LIESMICH.txt',
     `Rechnungen ${zeitraum.label} – ${s.firma.name}\r\n\r\n` +
-    `Bitte die ZIP-Datei zuerst vollständig entpacken. Danach öffnen die Links in der Spalte "PDF"\r\n` +
-    `der Excel-Tabelle die jeweilige Rechnung aus dem Ordner "Rechnungen".\r\n` +
-    `Bei Geschäftskunden liegt zusätzlich die E-Rechnung (XML, EN 16931) mit gleichem Namen bei.\r\n`);
+    `Bitte die ZIP-Datei zuerst vollständig entpacken. Danach öffnen die Links in der Excel-Tabelle\r\n` +
+    `die jeweilige Datei.\r\n\r\n` +
+    `Blatt "Übersicht": Summen, Umsatzsteuer und Vorsteuer, Ausgaben nach Kategorie.\r\n` +
+    `Blatt "Rechnungen": eigene Rechnungen (Ordner "Rechnungen"). Bei Geschäftskunden liegt\r\n` +
+    `zusätzlich die E-Rechnung (XML, EN 16931) mit gleichem Namen bei.\r\n` +
+    `Blatt "Eingangsrechnungen": Belege von Lieferanten (Ordner "Eingangsrechnungen").\r\n` +
+    `Fotos sind verkleinerte Bildkopien. PDFs und E-Rechnungen (XML/ZUGFeRD) liegen unverändert im Original vor.\r\n`);
 
   const blob = await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
-  return { bytes: blob, name: `Rechnungen ${zeitraum.datei}.zip`, anzahl: n };
+  return { bytes: blob, name: `Rechnungen und Belege ${zeitraum.datei}.zip`, anzahl: n, belege: bSortiert.length };
 }

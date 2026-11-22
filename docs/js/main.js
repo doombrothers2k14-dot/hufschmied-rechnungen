@@ -8,9 +8,10 @@ import {
 } from './logic.js';
 import { erzeugeDateien, exportZip } from './export.js';
 import * as konto from './konto.js';
+import { KATEGORIEN, ZAHLARTEN, dateiVorbereiten, anhangText, groesseText, ausBrutto } from './belege.js';
 
 const html = htm.bind(h);
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 
 // ---------------------------------------------------------------------------
 // Icons (Strich-Icons, 24er Raster)
@@ -32,7 +33,11 @@ const ICON = {
   safe: 'M4 5h16v14H4z M12 9a3 3 0 100 6 3 3 0 000-6z M4 9h2 M4 15h2',
   eye: 'M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z M12 9a3 3 0 100 6 3 3 0 000-6z',
   copy: 'M9 9h11v11H9z M5 15V4h11',
-  cloud: 'M7 18h10a4 4 0 00.5-7.97A6 6 0 006.1 9.1 4.5 4.5 0 007 18z'
+  cloud: 'M7 18h10a4 4 0 00.5-7.97A6 6 0 006.1 9.1 4.5 4.5 0 007 18z',
+  receipt: 'M6 3h12v18l-3-2-3 2-3-2-3 2z M9 8h6 M9 12h6 M9 16h3',
+  camera: 'M4 8h3l2-3h6l2 3h3v11H4z M12 10a3.5 3.5 0 100 7 3.5 3.5 0 000-7z',
+  clip: 'M20 11l-8.5 8.5a5 5 0 01-7-7L13 4a3.3 3.3 0 014.7 4.7L9.2 17.2a1.7 1.7 0 01-2.4-2.4L14.5 7',
+  close: 'M6 6l12 12 M18 6L6 18'
 };
 const Icon = ({ n, w = 2 }) => html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width=${w} stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[n].split(' M').map((d, i) => html`<path d=${i ? 'M' + d : d}></path>`)}</svg>`;
 
@@ -107,7 +112,7 @@ function Head({ title, sub, onBack, right }) {
 }
 
 function Tabs({ tab, go }) {
-  const t = [['home', 'Übersicht', 'home'], ['rechnungen', 'Rechnungen', 'doc'], ['kunden', 'Kunden', 'people'], ['mehr', 'Mehr', 'more']];
+  const t = [['home', 'Übersicht', 'home'], ['rechnungen', 'Rechnungen', 'doc'], ['belege', 'Belege', 'receipt'], ['kunden', 'Kunden', 'people'], ['mehr', 'Mehr', 'more']];
   return html`<nav class="tabs" aria-label="Hauptmenü">
     ${t.map(([id, label, icon]) => html`<button class="tab" aria-current=${tab === id ? 'page' : null} onClick=${() => go({ name: 'tab', tab: id }, true)}><${Icon} n=${icon} /><span>${label}</span></button>`)}
   </nav>`;
@@ -694,6 +699,200 @@ function PferdForm({ ctx, id, customerId }) {
 }
 
 // ---------------------------------------------------------------------------
+// Eingangsrechnungen (Belege von Lieferanten)
+
+const monatsName = (ym) => {
+  const [y, m] = ym.split('-').map(Number);
+  return new Date(y, m - 1, 1).toLocaleDateString('de-DE', { month: 'long', year: 'numeric' });
+};
+
+function Belege({ ctx }) {
+  const { data, go } = ctx;
+  const [q, setQ] = useState('');
+  const t = q.trim().toLowerCase();
+  const liste = data.expenses.filter((b) => !b.geloescht)
+    .filter((b) => !t || (b.lieferant || '').toLowerCase().includes(t) || (b.nummer || '').toLowerCase().includes(t) || (b.kategorie || '').toLowerCase().includes(t))
+    .sort((a, b) => (b.datum + b.createdAt).localeCompare(a.datum + a.createdAt));
+  const gruppen = [];
+  for (const b of liste) {
+    const ym = b.datum.slice(0, 7);
+    let g = gruppen[gruppen.length - 1];
+    if (!g || g.ym !== ym) { g = { ym, belege: [] }; gruppen.push(g); }
+    g.belege.push(b);
+  }
+  return html`<div class="screen">
+    <div class="head-big"><div><h1>Eingangsrechnungen</h1></div></div>
+    <main class="body with-tabs">
+      <input class="search" type="search" placeholder="Suche: Lieferant, Nummer, Kategorie" aria-label="Belege suchen" value=${q} onInput=${(e) => setQ(e.target.value)} />
+      ${gruppen.length ? gruppen.slice(0, 24).map((g) => html`<section class="section">
+        <h2>${monatsName(g.ym)} <small>${g.belege.length} Belege · ${euro(g.belege.reduce((a, b) => a + (b.brutto || 0), 0))}</small></h2>
+        <div class="list">${g.belege.map((b) => html`<button class="row" onClick=${() => go({ name: 'beleg', id: b.id })}>
+          <span class="main"><span class="t">${b.lieferant || 'Ohne Lieferant'}</span><span class="s">${deDatum(b.datum)} · ${b.kategorie || 'ohne Kategorie'}</span></span>
+          <span class="end"><span class="amt">${euro(b.brutto || 0)}</span>${b.quelle === 'e-rechnung' ? html`<span class="badge gewerbe">E-Rechnung</span>` : !b.anhaenge.length ? html`<span class="badge offen">ohne Beleg</span>` : null}</span>
+        </button>`)}</div>
+      </section>`) : html`<div class="list"><p class="empty">${data.expenses.length ? 'Kein Treffer.' : 'Noch keine Eingangsrechnungen. Tippe auf „Beleg erfassen“ und fotografiere die Rechnung oder wähle eine PDF bzw. E-Rechnung aus.'}</p></div>`}
+    </main>
+    <button class="btn fab" onClick=${() => go({ name: 'beleg' })}><${Icon} n="camera" w="2.2" />Beleg erfassen</button>
+  </div>`;
+}
+
+function BelegForm({ ctx, id }) {
+  const { data, back, reload, toast } = ctx;
+  const vorhanden = id ? data.expenses.find((b) => b.id === id) : null;
+  const [b, setB] = useState(() => vorhanden ? { ...vorhanden, bruttoText: centToInput(vorhanden.brutto || 0) }
+    : { id: uid(), datum: heuteISO(), lieferant: '', nummer: '', kategorie: KATEGORIEN[0], bruttoText: '', satz: 19, steuern: null, zahlart: 'ueberweisung', notiz: '', anhaenge: [], quelle: 'manuell' });
+  const [neu, setNeu] = useState([]);            // neu hinzugefügte Dateien { anhang, bytes, url }
+  const [urls, setUrls] = useState({});          // Vorschau-URLs vorhandener Anhänge
+  const [busy, setBusy] = useState(false);
+  const [hinweis, setHinweis] = useState(null);
+  const kamera = useRef(null);
+  const datei = useRef(null);
+
+  useEffect(() => {
+    let alive = true;
+    const erzeugt = [];
+    (async () => {
+      const u = {};
+      for (const a of (vorhanden ? vorhanden.anhaenge : [])) {
+        const bytes = await db.datei(b.id, a.id);
+        if (bytes) { u[a.id] = URL.createObjectURL(new Blob([bytes], { type: a.typ })); erzeugt.push(u[a.id]); }
+      }
+      if (alive) setUrls(u);
+    })();
+    return () => { alive = false; erzeugt.forEach((x) => URL.revokeObjectURL(x)); };
+  }, [id]);
+  useEffect(() => () => neu.forEach((n) => URL.revokeObjectURL(n.url)), []);
+
+  const bruttoCent = parseEuro(b.bruttoText);
+  const aufgeteilt = b.steuern && b.steuern.length && b.satz === 'gemischt'
+    ? { netto: b.steuern.reduce((a, t) => a + t.netto, 0), steuer: b.steuern.reduce((a, t) => a + t.steuer, 0) }
+    : bruttoCent !== null ? ausBrutto(bruttoCent, Number(b.satz) || 0) : null;
+  const alleAnhaenge = [...b.anhaenge.map((a) => ({ a, url: urls[a.id], neu: false })), ...neu.map((n) => ({ a: n.anhang, url: n.url, neu: true }))];
+
+  const hinzufuegen = async (e) => {
+    const files = [...(e.target.files || [])];
+    e.target.value = '';
+    if (!files.length) return;
+    setBusy(true);
+    try {
+      const fertig = [];
+      let er = null;
+      for (const f of files) {
+        if (f.size > 25 * 1024 * 1024) { alert(`${f.name} ist größer als 25 MB und wurde nicht übernommen.`); continue; }
+        const v = await dateiVorbereiten(f);
+        fertig.push({ ...v, url: URL.createObjectURL(new Blob([v.bytes], { type: v.anhang.typ })) });
+        if (v.eRechnung && !er) er = v.eRechnung;
+      }
+      setNeu((alt) => [...alt, ...fertig]);
+      if (er) {
+        const mehrereSaetze = er.steuern.filter((t) => t.netto || t.steuer).length > 1;
+        const ersterSatz = er.steuern[0] ? er.steuern[0].satz : 19;
+        setB((alt) => ({
+          ...alt,
+          datum: er.datum || alt.datum,
+          lieferant: er.lieferant || alt.lieferant,
+          nummer: er.nummer || alt.nummer,
+          bruttoText: er.brutto !== null ? centToInput(er.brutto) : alt.bruttoText,
+          satz: mehrereSaetze ? 'gemischt' : ([19, 7, 0].includes(ersterSatz) ? ersterSatz : 'gemischt'),
+          steuern: er.steuern.length ? er.steuern : null,
+          quelle: 'e-rechnung',
+          gutschrift: er.gutschrift || undefined
+        }));
+        setHinweis(`Angaben aus der E-Rechnung übernommen (${er.format}${er.gutschrift ? ', Gutschrift' : ''}). Bitte kurz prüfen.`);
+      }
+    } catch (err) {
+      alert('Datei konnte nicht gelesen werden: ' + err.message);
+    } finally { setBusy(false); }
+  };
+
+  const entfernen = (eintrag) => {
+    if (eintrag.neu) {
+      URL.revokeObjectURL(eintrag.url);
+      setNeu(neu.filter((n) => n.anhang.id !== eintrag.a.id));
+    } else if (confirm('Anhang aus diesem Beleg entfernen? Die Datei bleibt zur Aufbewahrung gespeichert.')) {
+      setB({ ...b, anhaenge: b.anhaenge.filter((a) => a.id !== eintrag.a.id), entfernteAnhaenge: [...(b.entfernteAnhaenge || []), eintrag.a] });
+    }
+  };
+
+  const speichern = async () => {
+    if (!alleAnhaenge.length && !confirm('Es ist kein Foto und keine Datei angehängt. Trotzdem speichern?')) return;
+    setBusy(true);
+    try {
+      const { bruttoText, ...rest } = b;
+      const beleg = {
+        ...rest,
+        lieferant: b.lieferant.trim(), nummer: (b.nummer || '').trim(),
+        brutto: bruttoCent, netto: aufgeteilt.netto, steuer: aufgeteilt.steuer,
+        steuern: b.satz === 'gemischt' ? b.steuern : [{ satz: Number(b.satz), netto: aufgeteilt.netto, steuer: aufgeteilt.steuer }],
+        anhaenge: [...b.anhaenge, ...neu.map((n) => n.anhang)],
+        createdAt: b.createdAt || new Date().toISOString(), geaendertAm: vorhanden ? new Date().toISOString() : undefined
+      };
+      await db.belegSpeichern(beleg, neu.map((n) => ({ id: n.anhang.id, bytes: n.bytes })));
+      await reload();
+      toast(vorhanden ? 'Beleg gespeichert' : 'Beleg erfasst');
+      back();
+    } catch (err) {
+      alert('Speichern fehlgeschlagen: ' + err.message);
+    } finally { setBusy(false); }
+  };
+
+  const loeschen = async () => {
+    if (!confirm('Diesen Beleg löschen? Er verschwindet aus Liste und Export, bleibt aber zur Aufbewahrung gespeichert.')) return;
+    await db.belegLoeschen(vorhanden);
+    await reload();
+    toast('Beleg gelöscht');
+    back();
+  };
+
+  const set = (f) => (e) => setB({ ...b, [f]: e.target.value });
+  return html`<div class="screen">
+    <${Head} title=${vorhanden ? (vorhanden.lieferant || 'Beleg') : 'Beleg erfassen'} sub=${vorhanden ? deDatum(vorhanden.datum) : ''} onBack=${back} />
+    <main class="body with-bar">
+      <section class="section">
+        <h2>Fotos und Dateien</h2>
+        ${alleAnhaenge.length ? html`<div class="anhaenge">${alleAnhaenge.map((e) => html`<div class="anhang">
+          ${e.a.typ.startsWith('image/') && e.url ? html`<a href=${e.url} target="_blank" rel="noopener" class="thumb" style=${`background-image:url(${e.url})`} aria-label=${'Foto ' + e.a.name + ' öffnen'}></a>`
+            : html`<a href=${e.url || '#'} target="_blank" rel="noopener" class="thumb datei" aria-label=${e.a.name + ' öffnen'}>${e.a.art === 'xrechnung' || e.a.art === 'xml' ? 'XML' : 'PDF'}</a>`}
+          <div class="info"><span class="t">${anhangText(e.a)}</span><span class="s">${groesseText(e.a.groesse)}</span></div>
+          <button class="icon-btn" aria-label=${'Anhang ' + e.a.name + ' entfernen'} onClick=${() => entfernen(e)}><${Icon} n="close" /></button>
+        </div>`)}</div>` : html`<p class="small-print" style="font-size:14px">Rechnung fotografieren oder eine Datei auswählen (PDF, E-Rechnung als XML oder ZUGFeRD-PDF). Mehrere Dateien pro Beleg sind möglich.</p>`}
+        <input ref=${kamera} type="file" accept="image/*" capture="environment" class="visually-hidden" onChange=${hinzufuegen} />
+        <input ref=${datei} type="file" accept="image/*,application/pdf,.pdf,.xml,application/xml,text/xml" multiple class="visually-hidden" data-test="datei" onChange=${hinzufuegen} />
+        <div class="grid2">
+          <button class="btn secondary small" disabled=${busy} onClick=${() => kamera.current.click()}><${Icon} n="camera" />Fotografieren</button>
+          <button class="btn secondary small" disabled=${busy} onClick=${() => datei.current.click()}><${Icon} n="clip" />Datei</button>
+        </div>
+        ${hinweis && html`<div class="note ok">${hinweis}</div>`}
+      </section>
+      <div class="grid2">
+        <${Field} label="Rechnungsdatum"><input type="date" value=${b.datum} onInput=${set('datum')} /><//>
+        <${Field} label="Rechnungsnummer"><input value=${b.nummer} onInput=${set('nummer')} /><//>
+      </div>
+      <${Field} label="Lieferant"><input value=${b.lieferant} onInput=${set('lieferant')} list="lieferanten" autocomplete="off" /><//>
+      <datalist id="lieferanten">${[...new Set(data.expenses.map((x) => x.lieferant).filter(Boolean))].sort().map((l) => html`<option value=${l}></option>`)}</datalist>
+      <div class="grid2">
+        <${Field} label="Betrag brutto (€)"><input inputmode="decimal" value=${b.bruttoText} placeholder="z. B. 119,00" onInput=${(e) => setB({ ...b, bruttoText: e.target.value, satz: b.satz === 'gemischt' ? 19 : b.satz })} /><//>
+        <${Field} label="Umsatzsteuer"><select value=${b.satz} onChange=${(e) => setB({ ...b, satz: e.target.value === 'gemischt' ? 'gemischt' : Number(e.target.value) })}>
+          <option value="19">19 %</option><option value="7">7 %</option><option value="0">0 % / ohne</option>
+          ${b.steuern && b.steuern.length > 1 && html`<option value="gemischt">gemischt</option>`}
+        </select><//>
+      </div>
+      ${aufgeteilt && html`<div class="card pad">
+        <div class="kv muted"><span>Netto</span><span>${euro(aufgeteilt.netto)}</span></div>
+        <div class="kv muted"><span>Vorsteuer${b.satz === 'gemischt' ? ' (' + b.steuern.map((t) => t.satz + ' %').join(' / ') + ')' : ''}</span><span>${euro(aufgeteilt.steuer)}</span></div>
+      </div>`}
+      <div class="grid2">
+        <${Field} label="Kategorie"><select value=${b.kategorie} onChange=${set('kategorie')}>${KATEGORIEN.map((k) => html`<option value=${k}>${k}</option>`)}</select><//>
+        <${Field} label="Bezahlt per"><select value=${b.zahlart} onChange=${set('zahlart')}>${Object.entries(ZAHLARTEN).map(([k, v]) => html`<option value=${k}>${v}</option>`)}</select><//>
+      </div>
+      <${Field} label="Notiz"><textarea value=${b.notiz} onInput=${set('notiz')} style="min-height:80px"></textarea><//>
+      ${vorhanden && html`<button class="btn danger block" onClick=${loeschen}>Beleg löschen</button>`}
+    </main>
+    <div class="bar"><button class="btn block" disabled=${busy || !b.datum || !b.lieferant.trim() || bruttoCent === null} onClick=${speichern}>${busy ? 'Einen Moment …' : 'Speichern'}</button></div>
+  </div>`;
+}
+
+// ---------------------------------------------------------------------------
 // Mehr: Leistungen, Firma, Export, Sicherung
 
 function Mehr({ ctx }) {
@@ -701,7 +900,7 @@ function Mehr({ ctx }) {
   const items = [
     ['leistungen', 'Leistungen und Preise', `${data.services.filter((x) => x.aktiv !== false).length} aktiv`, 'tag'],
     ['firma', 'Firmendaten', db.firmaVollstaendig(data.settings) ? 'vollständig' : 'unvollständig', 'building'],
-    ['export', 'Export für den Steuerberater', 'Excel-Liste und PDFs als ZIP', 'download'],
+    ['export', 'Export für den Steuerberater', 'Rechnungen und Belege als ZIP', 'download'],
     ['sync', 'Synchronisierung', syncText(ctx.sync), 'cloud'],
     ['sicherung', 'Datensicherung', data.settings.letzteSicherung ? 'zuletzt ' + deDatum(data.settings.letzteSicherung) : 'noch nie', 'safe']
   ];
@@ -830,7 +1029,9 @@ function Export({ ctx }) {
   const [zip, setZip] = useState(null);
   const zr = zeitraumGrenzen(art, jahr, art === 'monat' ? monat : art === 'bereich' ? { von, bis } : quartal);
   const liste = data.invoices.filter((i) => i.datum >= zr.von && i.datum <= zr.bis);
+  const belegeZr = data.expenses.filter((b) => !b.geloescht && b.datum >= zr.von && b.datum <= zr.bis);
   const sum = (k) => liste.reduce((a, i) => a + i.summen[k], 0);
+  const bsum = (k) => belegeZr.reduce((a, b) => a + (b[k] || 0), 0);
   const jahre = [...new Set([jetzt.getFullYear(), ...data.invoices.map((i) => Number(i.datum.slice(0, 4)))])].sort((a, b) => b - a);
   const monate = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
   useEffect(() => setZip(null), [art, jahr, monat, quartal, von.jahr, von.monat, bis.jahr, bis.monat]);
@@ -838,8 +1039,8 @@ function Export({ ctx }) {
   const erstellen = async () => {
     setBusy(true);
     try {
-      const z = await exportZip(liste, zr, data.settings, (inv, a) => db.datei(inv.id, a));
-      await db.log('export_erstellt', zr.datei, { anzahl: z.anzahl });
+      const z = await exportZip(liste, zr, data.settings, (obj, a) => db.datei(obj.id, a), belegeZr);
+      await db.log('export_erstellt', zr.datei, { rechnungen: z.anzahl, belege: z.belege });
       setZip(z);
     } catch (e) {
       alert('Export fehlgeschlagen: ' + e.message);
@@ -863,16 +1064,19 @@ function Export({ ctx }) {
         ${art === 'quartal' && html`<${Field} label="Quartal"><select value=${quartal} onChange=${(e) => setQuartal(Number(e.target.value))}>${[1, 2, 3, 4].map((x) => html`<option value=${x}>${x}. Quartal</option>`)}</select><//>`}
       </div>`}
       <div class="card pad">
-        <div class="kv"><span>${zr.label}</span><b>${liste.length} Belege</b></div>
-        <div class="kv muted"><span>Netto</span><span>${euro(sum('netto'))}</span></div>
-        <div class="kv muted"><span>Umsatzsteuer</span><span>${euro(sum('steuer'))}</span></div>
-        <div class="kv big"><span>Brutto</span><span>${euro(sum('brutto'))}</span></div>
+        <div class="kv"><b>${zr.label}</b></div>
+        <div class="kv"><span>Ausgangsrechnungen (${liste.length})</span><span>${euro(sum('brutto'))}</span></div>
+        <div class="kv muted"><span>davon Umsatzsteuer</span><span>${euro(sum('steuer'))}</span></div>
+        <div class="sep"></div>
+        <div class="kv"><span>Eingangsrechnungen (${belegeZr.length})</span><span>${euro(bsum('brutto'))}</span></div>
+        <div class="kv muted"><span>davon Vorsteuer</span><span>${euro(bsum('steuer'))}</span></div>
+        ${belegeZr.some((b) => !b.anhaenge.length) && html`<p class="small-print">${belegeZr.filter((b) => !b.anhaenge.length).length} Beleg(e) ohne Foto oder Datei.</p>`}
       </div>
-      <p class="small-print" style="font-size:14px">Die ZIP-Datei enthält eine Excel-Tabelle mit allen Rechnungen und den Ordner „Rechnungen“ mit den PDFs. In der Tabelle öffnet der Link in der Spalte „PDF“ die passende Rechnung, sobald die ZIP entpackt ist.</p>
+      <p class="small-print" style="font-size:14px">Die ZIP-Datei enthält eine Excel-Datei mit den Blättern „Übersicht“, „Rechnungen“ und „Eingangsrechnungen“ sowie die Ordner mit allen PDFs, Fotos und E-Rechnungen. Jede Zeile in Excel hat einen Link auf die passende Datei, sobald die ZIP entpackt ist.</p>
       ${!zip
-        ? html`<button class="btn block" disabled=${busy || !liste.length} onClick=${erstellen}>${busy ? 'Wird erstellt …' : 'Export erstellen'}</button>`
-        : html`<div class="note ok">Export fertig: ${zip.name} (${zip.anzahl} Belege).</div>
-          <button class="btn block" onClick=${async () => { await teilen([{ bytes: zip.bytes, name: zip.name, type: 'application/zip' }], { titel: zip.name, text: `Rechnungen ${zr.label} – ${data.settings.firma.name}` }); toast('Export geteilt'); }}><${Icon} n="share" />Teilen / per Mail senden</button>`}
+        ? html`<button class="btn block" disabled=${busy || !(liste.length || belegeZr.length)} onClick=${erstellen}>${busy ? 'Wird erstellt …' : 'Export erstellen'}</button>`
+        : html`<div class="note ok">Export fertig: ${zip.name} (${zip.anzahl} Rechnungen, ${zip.belege} Eingangsrechnungen).</div>
+          <button class="btn block" onClick=${async () => { await teilen([{ bytes: zip.bytes, name: zip.name, type: 'application/zip' }], { titel: zip.name, text: `Rechnungen und Belege ${zr.label} – ${data.settings.firma.name}` }); toast('Export geteilt'); }}><${Icon} n="share" />Teilen / per Mail senden</button>`}
     </main>
   </div>`;
 }
@@ -1026,10 +1230,10 @@ function App() {
   const toastTimer = useRef(null);
 
   const reload = async () => {
-    const [settings, customers, horses, services, invoices] = await Promise.all([
-      db.einstellungen(), db.all('customers'), db.all('horses'), db.all('services'), db.all('invoices')
+    const [settings, customers, horses, services, invoices, expenses] = await Promise.all([
+      db.einstellungen(), db.all('customers'), db.all('horses'), db.all('services'), db.all('invoices'), db.all('expenses')
     ]);
-    setData({ settings, customers, horses, services, invoices });
+    setData({ settings, customers, horses, services, invoices, expenses });
   };
   useEffect(() => {
     reload();
@@ -1060,6 +1264,7 @@ function App() {
       case 'tab':
         return html`${r.tab === 'home' && html`<${Uebersicht} ctx=${ctx} />`}
           ${r.tab === 'rechnungen' && html`<${Rechnungen} ctx=${ctx} filter=${r.filter} />`}
+          ${r.tab === 'belege' && html`<${Belege} ctx=${ctx} />`}
           ${r.tab === 'kunden' && html`<${Kunden} ctx=${ctx} />`}
           ${r.tab === 'mehr' && html`<${Mehr} ctx=${ctx} />`}
           <${Tabs} tab=${r.tab} go=${go} />`;
@@ -1074,6 +1279,7 @@ function App() {
       case 'export': return html`<${Export} ctx=${ctx} />`;
       case 'sicherung': return html`<${Sicherung} ctx=${ctx} />`;
       case 'sync': return html`<${Synchronisierung} ctx=${ctx} />`;
+      case 'beleg': return html`<${BelegForm} ctx=${ctx} id=${r.id} />`;
       default: return html`<${Uebersicht} ctx=${ctx} />`;
     }
   };

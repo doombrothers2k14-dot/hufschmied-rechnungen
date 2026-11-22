@@ -129,6 +129,41 @@ try:
         shot(page, 'bezahlt')
         page.click('[aria-label="Zurück"]')
 
+        # Eingangsrechnungen: Foto, ZUGFeRD-PDF, XRechnung
+        OUTD = os.path.join(os.path.dirname(__file__), '..', 'out')
+        page.click('.tab >> text=Belege')
+        page.click('button.fab')
+        page.set_input_files('input[data-test=datei]', os.path.join(OUTD, 'testfoto.png'))
+        page.wait_for_selector('.anhang >> text=Foto')
+        fill('Lieferant', 'Tankstelle Süd')
+        fill('Betrag brutto (€)', '59,50')
+        page.wait_for_selector('text=9,50 €')
+        page.get_by_label('Kategorie').select_option('Fahrzeug & Kraftstoff')
+        page.get_by_label('Bezahlt per').select_option('karte')
+        shot(page, 'beleg-foto')
+        page.click('.bar >> text=Speichern')
+        page.wait_for_selector('.row >> text=Tankstelle Süd')
+
+        page.click('button.fab')
+        page.set_input_files('input[data-test=datei]', os.path.join(OUTD, 'RE-2026-0001.pdf'))
+        page.wait_for_selector('text=Angaben aus der E-Rechnung übernommen', timeout=20000)
+        assert page.get_by_label('Lieferant').input_value() == 'Hufbeschlag Muster'
+        assert page.get_by_label('Betrag brutto (€)').input_value() == '159,89'
+        page.wait_for_selector('.anhang >> text=ZUGFeRD-PDF')
+        shot(page, 'beleg-zugferd')
+        page.click('.bar >> text=Speichern')
+        page.wait_for_selector('.row >> text=Hufbeschlag Muster')
+
+        page.click('button.fab')
+        page.set_input_files('input[data-test=datei]', [os.path.join(OUTD, 'xrechnung-ubl-beispiel.xml'), os.path.join(OUTD, 'testfoto.png')])
+        page.wait_for_selector('text=Angaben aus der E-Rechnung übernommen', timeout=20000)
+        assert page.get_by_label('Lieferant').input_value() == 'Hufeisen-Großhandel Nord GmbH'
+        assert page.get_by_label('Rechnungsnummer').input_value() == '2026-4711'
+        assert page.locator('.anhang').count() == 2, page.locator('.anhang').count()
+        page.click('.bar >> text=Speichern')
+        page.wait_for_selector('.row >> text=Hufeisen-Großhandel Nord GmbH')
+        shot(page, 'belege-liste')
+
         # Export
         page.click('.tab >> text=Mehr')
         page.click('text=Export für den Steuerberater')
@@ -137,7 +172,8 @@ try:
         page.get_by_label('Von Monat').select_option('9')
         page.get_by_label('Bis Monat').select_option('11')
         page.wait_for_selector('text=September bis November 2026')
-        page.wait_for_selector('text=2 Belege')
+        page.wait_for_selector('text=Ausgangsrechnungen (2)')
+        page.wait_for_selector('text=Eingangsrechnungen (3)')
         shot(page, 'export-bereich')
         page.click('text=Export erstellen')
         page.wait_for_selector('text=Export fertig')
@@ -147,6 +183,16 @@ try:
         d = dl.value
         d.save_as('out/e2e-' + d.suggested_filename)
         print('Download:', d.suggested_filename)
+        import zipfile, io
+        zf = zipfile.ZipFile('out/e2e-' + d.suggested_filename)
+        eing = sorted(n for n in zf.namelist() if n.startswith('Eingangsrechnungen/') and not n.endswith('/'))
+        print('Eingangsrechnungen im ZIP:', eing)
+        assert len(eing) == 4, eing
+        fotos = [n for n in eing if n.endswith('.jpg')]
+        groessen = [len(zf.read(n)) for n in fotos]
+        print('Fotogrößen (KB):', [g // 1024 for g in groessen])
+        assert all(g < 900 * 1024 for g in groessen)
+        assert zf.read([n for n in eing if n.endswith('.pdf')][0]) == open(os.path.join(OUTD, 'RE-2026-0001.pdf'), 'rb').read(), 'PDF unverändert'
         page.click('[aria-label="Zurück"]')
 
         # Storno
