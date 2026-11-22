@@ -97,6 +97,7 @@ try:
         shot(page, 'vorschau')
         page.click('text=Rechnung erstellen')
         page.wait_for_selector('text=Rechnung erstellt', timeout=20000)
+        page.wait_for_selector('text=RE-2026-11-0001')
         shot(page, 'fertig')
         with page.expect_download() as dl:
             page.click('text=Per Mail senden')
@@ -131,6 +132,13 @@ try:
         # Export
         page.click('.tab >> text=Mehr')
         page.click('text=Export für den Steuerberater')
+        page.click('.chip >> text=Mehrere Monate')
+        page.wait_for_selector('text=Von Monat')
+        page.get_by_label('Von Monat').select_option('9')
+        page.get_by_label('Bis Monat').select_option('11')
+        page.wait_for_selector('text=September bis November 2026')
+        page.wait_for_selector('text=2 Belege')
+        shot(page, 'export-bereich')
         page.click('text=Export erstellen')
         page.wait_for_selector('text=Export fertig')
         shot(page, 'export')

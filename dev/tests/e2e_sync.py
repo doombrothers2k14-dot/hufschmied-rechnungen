@@ -20,6 +20,8 @@ class Geraet:
         self.p.on('console', lambda m: errors.append(f'{name}: {m.text}') if m.type == 'error' else None)
         self.p.on('pageerror', lambda e: errors.append(f'{name}: {e}'))
         self.p.add_init_script('window.confirm = () => true;')
+        # Echte Supabase-Adresse aus config.js durch den nachgebauten Server ersetzen
+        self.p.route('**/config.js', lambda r: r.fulfill(content_type='text/javascript', body="export const SUPABASE_URL = 'http://127.0.0.1:54329';\nexport const SUPABASE_ANON_KEY = 'test-anon-key-0123456789abcdef';\n"))
         self.p.goto('http://127.0.0.1:8766/')
         self.p.wait_for_selector('text=Übersicht')
         self.n = 0
@@ -33,9 +35,6 @@ class Geraet:
     def anmelden(self, neu):
         self.click('.tab >> text=Mehr')
         self.click('text=Synchronisierung')
-        self.t().get_by_label('Project URL').fill('http://127.0.0.1:54329')
-        self.t().get_by_label('Publishable key (oder anon public key)').fill('test-anon-key-0123456789abcdef')
-        self.click('text=Weiter')
         if neu: self.click('.chip >> text=Neues Konto')
         self.fill('E-Mail', 'max@hufbeschlag-muster.example')
         self.fill('Passwort', 'Hufeisen-2026!')

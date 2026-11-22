@@ -13,9 +13,9 @@ Die App läuft im Browser und speichert alles auf dem Gerät. Mit der Synchronis
 - Geschäftskunden bekommen zusätzlich eine E-Rechnung (ZUGFeRD/Factur-X, Profil EN 16931). Die XML-Datei ist in die PDF eingebettet und wird auch einzeln mitgeschickt.
 - Versand über das Teilen-Menü des iPhones (Mail mit PDF im Anhang und vorbereitetem Text)
 - Offene, überfällige und bezahlte Rechnungen; „per Bank bezahlt am“ mit Datum
-- Fortlaufende Rechnungsnummern (RE-2026-0001 …). Erstellte Rechnungen sind festgeschrieben (Prüfsumme SHA-256), Korrekturen laufen über eine Stornorechnung.
+- Fortlaufende Rechnungsnummern mit eigenem Nummernkreis pro Monat (RE-2026-01-0001, RE-2026-01-0002 … im Februar RE-2026-02-0001). Erstellte Rechnungen sind festgeschrieben (Prüfsumme SHA-256), Korrekturen laufen über eine Stornorechnung.
 - Übersicht der Pferde, die in den nächsten 14 Tagen fällig sind
-- Export für den Steuerberater: ZIP mit Excel-Liste und allen PDFs. Jede Zeile der Tabelle hat einen Link auf die passende PDF.
+- Export für den Steuerberater für einen Monat, mehrere Monate (von–bis), ein Quartal oder ein Jahr: ZIP mit Excel-Liste und allen PDFs. Jede Zeile der Tabelle hat einen Link auf die passende PDF.
 - Datensicherung als Datei und Wiederherstellung, z. B. auf einem neuen iPhone
 - Funktioniert nach dem ersten Öffnen auch ohne Internet
 - Abgleich zwischen iPhone und PC mit Ende-zu-Ende-Verschlüsselung (AES-256). Ohne Netz wird lokal gespeichert und später abgeglichen. Rechnungsnummern vergibt der Server, damit zwei Geräte nie dieselbe Nummer nehmen.

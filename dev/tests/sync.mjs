@@ -56,7 +56,7 @@ await A.put('services', { id: 's1', name: 'Beschlag 4-fach', einheit: 'Stk', pre
 const pos = [{ name: 'Beschlag 4-fach', menge: 1, einheit: 'Stk', preisCent: 12000, steuersatz: 19, rabattProzent: 0 }];
 const entwurf = (k) => ({ typ: 'rechnung', datum: '2026-11-22', leistungsdatum: '2026-11-22', faelligAm: '2026-12-06', kundeId: k.id, kunde: k, pferde: ['Sultan'], pferdIds: ['p1'], positionen: pos, rabatt: null, summen: L.berechne(pos, null), zahlart: 'ueberweisung', status: 'offen' });
 const inv1 = await A.festschreiben(entwurf(kunde), erzeugeDateien);
-assert.equal(inv1.nr, 'RE-2026-0001');
+assert.equal(inv1.nr, 'RE-2026-11-0001');
 assert.equal((await A.outbox()).length, 0, 'ohne Sync keine Warteschlange');
 
 // --- A schaltet Synchronisierung ein
@@ -103,8 +103,8 @@ console.log('Nummern:', r2.nr, r3.nr);
 await syncA.lauf(); await syncB.lauf(); await syncA.lauf();
 assert.equal((await A.all('invoices')).length, 3);
 assert.equal((await B.all('invoices')).length, 3);
-assert.equal((await A.einstellungen()).zaehler[2026], 3, 'Zähler auf A aktuell');
-assert.equal((await B.einstellungen()).zaehler[2026], 3, 'Zähler auf B aktuell');
+assert.equal((await A.einstellungen()).zaehler['2026-11'], 3, 'Zähler auf A aktuell');
+assert.equal((await B.einstellungen()).zaehler['2026-11'], 3, 'Zähler auf B aktuell');
 
 // --- Gleichzeitige Änderung: lokale, noch nicht hochgeladene Änderung wird nicht überschrieben
 await A.put('customers', { ...kunde, telefon: '0171 111' });
@@ -117,6 +117,12 @@ console.log('Konfliktfall: beide Geräte haben', (await A.get('customers', 'k1')
 
 // --- Offline: ohne Server-Reservierung zählt das Gerät lokal weiter
 const r4 = await A.festschreiben(entwurf(kunde), erzeugeDateien, async () => { throw new Error('offline'); });
-assert.equal(r4.nr, 'RE-2026-0004');
+assert.equal(r4.nr, 'RE-2026-11-0004');
+// Neuer Monat: Zählung beginnt wieder bei 1, Server führt einen eigenen Zähler pro Monat
+const dez = await A.festschreiben({ ...entwurf(kunde), datum: '2026-12-01' }, erzeugeDateien, server.remote.nummerReservieren);
+assert.equal(dez.nr, 'RE-2026-12-0001');
+const jan = await B.festschreiben({ ...entwurf(kunde), datum: '2027-01-02' }, erzeugeDateien, server.remote.nummerReservieren);
+assert.equal(jan.nr, 'RE-2027-01-0001');
+console.log('Monatsnummern:', dez.nr, jan.nr);
 assert.equal(r4.nummerOffline, true);
 console.log('Sync-Tests ok');

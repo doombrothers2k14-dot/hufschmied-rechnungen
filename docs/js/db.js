@@ -1,6 +1,6 @@
 // Datenhaltung im Gerät (IndexedDB). Mit eingeschalteter Synchronisierung werden Änderungen
 // zusätzlich in einer Warteschlange (outbox) vermerkt und verschlüsselt hochgeladen.
-import { uid, formatNummer, heuteISO } from './logic.js';
+import { uid, formatNummer, periodeVon, heuteISO } from './logic.js';
 
 let DB_NAME = 'hufschmied-rechnungen';
 const DB_VERSION = 2;
@@ -222,26 +222,27 @@ export function firmaVollstaendig(s) {
 // --- Rechnung festschreiben -------------------------------------------------
 // Vergibt die nächste Nummer, speichert Rechnung + PDF + Prüfsumme in EINER Transaktion.
 // Danach ist die Rechnung unveränderbar; nur Zahlungsstatus und Storno-Vermerk ändern sich.
-// nummerReservieren(jahr, mindestens) fragt bei eingeschalteter Synchronisierung den Server,
+// nummerReservieren(periode als Zahl, z. B. 202601, mindestens) fragt bei eingeschalteter Synchronisierung den Server,
 // damit zwei Geräte nie dieselbe Nummer vergeben. Ohne Netz wird lokal weitergezählt.
 
 export async function festschreiben(entwurf, erzeugeDateien, nummerReservieren) {
   const db = await open();
   const s = await einstellungen();
-  const jahr = Number(entwurf.datum.slice(0, 4));
-  const lokalLfd = (s.zaehler[jahr] || 0) + 1;
+  const periode = periodeVon(entwurf.datum);            // "2026-01"
+  const periodeZahl = Number(periode.replace('-', ''));  // 202601 – Schlüssel für den Server-Zähler
+  const lokalLfd = (s.zaehler[periode] || 0) + 1;
   let lfd = lokalLfd;
   let offline = false;
   if (nummerReservieren) {
     try {
-      const n = await nummerReservieren(jahr, lokalLfd - 1);
+      const n = await nummerReservieren(periodeZahl, lokalLfd - 1);
       if (Number.isInteger(n) && n > 0) lfd = Math.max(n, lokalLfd);
     } catch (e) {
       offline = true;
       console.warn('Nummer konnte nicht beim Server reserviert werden, zähle lokal weiter', e);
     }
   }
-  const nr = formatNummer(s.prefix || 'RE', jahr, lfd);
+  const nr = formatNummer(s.prefix || 'RE', periode, lfd);
   const inv = { ...entwurf, id: uid(), nr, createdAt: new Date().toISOString(), nummerOffline: offline || undefined };
 
   // PDF (und ggf. XML) vor der Transaktion erzeugen – IndexedDB-Transaktionen dürfen nicht auf async warten
@@ -251,7 +252,7 @@ export async function festschreiben(entwurf, erzeugeDateien, nummerReservieren) 
 
   const logEintrag = { id: uid(), ts: new Date().toISOString(), aktion: 'rechnung_erstellt', ref: nr, details: { brutto: inv.summen.brutto, sha256: inv.pdfHash } };
   const tx = db.transaction(['settings', 'invoices', 'files', 'log', 'outbox'], 'readwrite');
-  tx.objectStore('settings').put({ ...s, zaehler: { ...s.zaehler, [jahr]: lfd } });
+  tx.objectStore('settings').put({ ...s, zaehler: { ...s.zaehler, [periode]: lfd } });
   tx.objectStore('invoices').add(inv);
   tx.objectStore('files').put({ id: inv.id + ':pdf', bytes: dateien.pdf });
   if (dateien.xml) tx.objectStore('files').put({ id: inv.id + ':xml', bytes: dateien.xml });

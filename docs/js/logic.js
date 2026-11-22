@@ -121,8 +121,13 @@ export function berechne(positionen, rabatt) {
 
 // --- Nummernkreis -----------------------------------------------------------
 
-export function formatNummer(prefix, jahr, lfd) {
-  return `${prefix}-${jahr}-${String(lfd).padStart(4, '0')}`;
+// Ein Nummernkreis pro Monat: RE-2026-01-0001, RE-2026-01-0002 … im Februar RE-2026-02-0001.
+// Zulässig nach § 14 UStG, weil der Monat Teil der Nummer ist und jede Nummer eindeutig bleibt.
+export function periodeVon(datumIso) {
+  return datumIso.slice(0, 7); // "2026-01"
+}
+export function formatNummer(prefix, periode, lfd) {
+  return `${prefix}-${periode}-${String(lfd).padStart(4, '0')}`;
 }
 
 // --- Pferde: wann ist der nächste Termin fällig? -----------------------------
@@ -154,7 +159,7 @@ export function statusVon(inv, heute = heuteISO()) {
 }
 
 export function zeitraumGrenzen(art, jahr, nr) {
-  // art: 'monat' (nr 1–12), 'quartal' (nr 1–4), 'jahr'
+  // art: 'monat' (nr 1–12), 'quartal' (nr 1–4), 'jahr', 'bereich' (nr = { von, bis })
   const pad = (n) => String(n).padStart(2, '0');
   if (art === 'jahr') return { von: `${jahr}-01-01`, bis: `${jahr}-12-31`, label: `${jahr}`, datei: `${jahr}` };
   if (art === 'quartal') {
@@ -163,8 +168,21 @@ export function zeitraumGrenzen(art, jahr, nr) {
     const ende = new Date(Date.UTC(jahr, m3, 0)).getUTCDate();
     return { von: `${jahr}-${pad(m1)}-01`, bis: `${jahr}-${pad(m3)}-${ende}`, label: `${nr}. Quartal ${jahr}`, datei: `${jahr}-Q${nr}` };
   }
-  const ende = new Date(Date.UTC(jahr, nr, 0)).getUTCDate();
   const namen = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
+  if (art === 'bereich') {
+    // nr = { von: { jahr, monat }, bis: { jahr, monat } }
+    let a = nr.von, b = nr.bis;
+    if (a.jahr * 12 + a.monat > b.jahr * 12 + b.monat) [a, b] = [b, a];
+    const endeB = new Date(Date.UTC(b.jahr, b.monat, 0)).getUTCDate();
+    const kurz = (x) => `${namen[x.monat - 1]} ${x.jahr}`;
+    const gleich = a.jahr === b.jahr && a.monat === b.monat;
+    return {
+      von: `${a.jahr}-${pad(a.monat)}-01`, bis: `${b.jahr}-${pad(b.monat)}-${endeB}`,
+      label: gleich ? kurz(a) : a.jahr === b.jahr ? `${namen[a.monat - 1]} bis ${kurz(b)}` : `${kurz(a)} bis ${kurz(b)}`,
+      datei: gleich ? `${a.jahr}-${pad(a.monat)}` : `${a.jahr}-${pad(a.monat)} bis ${b.jahr}-${pad(b.monat)}`
+    };
+  }
+  const ende = new Date(Date.UTC(jahr, nr, 0)).getUTCDate();
   return { von: `${jahr}-${pad(nr)}-01`, bis: `${jahr}-${pad(nr)}-${ende}`, label: `${namen[nr - 1]} ${jahr}`, datei: `${jahr}-${pad(nr)}` };
 }
 

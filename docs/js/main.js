@@ -10,7 +10,7 @@ import { erzeugeDateien, exportZip } from './export.js';
 import * as konto from './konto.js';
 
 const html = htm.bind(h);
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 
 // ---------------------------------------------------------------------------
 // Icons (Strich-Icons, 24er Raster)
@@ -769,15 +769,16 @@ function LeistungForm({ ctx, id }) {
 
 function Firma({ ctx }) {
   const { data, back, reload, toast } = ctx;
-  const jahr = new Date().getFullYear();
+  const periode = heuteISO().slice(0, 7);
+  const monatsName = new Date().toLocaleDateString('de-DE', { month: 'long', year: 'numeric' });
   const [s, setS] = useState(structuredClone(data.settings));
   const [start, setStart] = useState('');
   const setF = (f) => (e) => setS({ ...s, firma: { ...s.firma, [f]: e.target.value } });
-  const zaehlerFrei = !(data.settings.zaehler && data.settings.zaehler[jahr]);
+  const zaehlerFrei = !(data.settings.zaehler && data.settings.zaehler[periode]);
   const speichern = async () => {
     const neu = { ...s, zahlungszielTage: Number(s.zahlungszielTage) || 14, prefix: (s.prefix || 'RE').trim().replace(/[^A-Za-z0-9]/g, '') || 'RE' };
     const n = parseInt(start, 10);
-    if (zaehlerFrei && n > 1) neu.zaehler = { ...neu.zaehler, [jahr]: n - 1 };
+    if (zaehlerFrei && n > 1) neu.zaehler = { ...neu.zaehler, [periode]: n - 1 };
     await db.speichereEinstellungen(neu);
     await db.log('einstellungen_geaendert', null, null);
     await reload();
@@ -808,8 +809,8 @@ function Firma({ ctx }) {
         <${Field} label="Kürzel Rechnungsnr."><input value=${s.prefix} onInput=${(e) => setS({ ...s, prefix: e.target.value })} /><//>
       </div>
       ${zaehlerFrei
-        ? html`<${Field} label=${`Erste Rechnungsnummer ${jahr}`} hint=${`Falls er dieses Jahr schon Rechnungen geschrieben hat: nächste freie Nummer eintragen. Leer = ${s.prefix || 'RE'}-${jahr}-0001.`}><input inputmode="numeric" value=${start} placeholder="1" onInput=${(e) => setStart(e.target.value)} /><//>`
-        : html`<p class="small-print">Letzte vergebene Nummer ${jahr}: ${data.settings.zaehler[jahr]}.</p>`}
+        ? html`<${Field} label=${`Erste Rechnungsnummer im ${monatsName}`} hint=${`Die Nummern beginnen jeden Monat neu, z. B. ${s.prefix || 'RE'}-${periode}-0001. Falls in diesem Monat schon Rechnungen geschrieben wurden: nächste freie Nummer eintragen.`}><input inputmode="numeric" value=${start} placeholder="1" onInput=${(e) => setStart(e.target.value)} /><//>`
+        : html`<p class="small-print">Letzte vergebene Nummer im ${monatsName}: ${s.prefix || 'RE'}-${periode}-${String(data.settings.zaehler[periode]).padStart(4, '0')}. Die Nummern beginnen jeden Monat neu.</p>`}
       <${Field} label="Text für die Mail" hint="Platzhalter: {nr}, {betrag}, {kunde}, {firma}"><textarea value=${s.mailText} onInput=${(e) => setS({ ...s, mailText: e.target.value })}></textarea><//>
     </main>
     <div class="bar"><button class="btn block" onClick=${speichern}>Speichern</button></div>
@@ -823,14 +824,16 @@ function Export({ ctx }) {
   const [jahr, setJahr] = useState(jetzt.getFullYear());
   const [monat, setMonat] = useState(jetzt.getMonth() + 1);
   const [quartal, setQuartal] = useState(Math.floor(jetzt.getMonth() / 3) + 1);
+  const [von, setVon] = useState({ jahr: jetzt.getFullYear(), monat: Math.max(1, jetzt.getMonth()) });
+  const [bis, setBis] = useState({ jahr: jetzt.getFullYear(), monat: jetzt.getMonth() + 1 });
   const [busy, setBusy] = useState(false);
   const [zip, setZip] = useState(null);
-  const zr = zeitraumGrenzen(art, jahr, art === 'monat' ? monat : quartal);
+  const zr = zeitraumGrenzen(art, jahr, art === 'monat' ? monat : art === 'bereich' ? { von, bis } : quartal);
   const liste = data.invoices.filter((i) => i.datum >= zr.von && i.datum <= zr.bis);
   const sum = (k) => liste.reduce((a, i) => a + i.summen[k], 0);
   const jahre = [...new Set([jetzt.getFullYear(), ...data.invoices.map((i) => Number(i.datum.slice(0, 4)))])].sort((a, b) => b - a);
   const monate = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
-  useEffect(() => setZip(null), [art, jahr, monat, quartal]);
+  useEffect(() => setZip(null), [art, jahr, monat, quartal, von.jahr, von.monat, bis.jahr, bis.monat]);
 
   const erstellen = async () => {
     setBusy(true);
@@ -846,12 +849,19 @@ function Export({ ctx }) {
   return html`<div class="screen">
     <${Head} title="Export für den Steuerberater" onBack=${back} />
     <main class="body">
-      <div class="chips">${[['monat', 'Monat'], ['quartal', 'Quartal'], ['jahr', 'Jahr']].map(([id, l]) => html`<button class="chip" aria-pressed=${art === id ? 'true' : 'false'} onClick=${() => setArt(id)}>${l}</button>`)}</div>
+      <div class="chips">${[['monat', 'Ein Monat'], ['bereich', 'Mehrere Monate'], ['quartal', 'Quartal'], ['jahr', 'Jahr']].map(([id, l]) => html`<button class="chip" aria-pressed=${art === id ? 'true' : 'false'} onClick=${() => setArt(id)}>${l}</button>`)}</div>
+      ${art === 'bereich' ? html`
+      <div class="grid2">
+        <${Field} label="Von Monat"><select value=${von.monat} onChange=${(e) => setVon({ ...von, monat: Number(e.target.value) })}>${monate.map((m, i) => html`<option value=${i + 1}>${m}</option>`)}</select><//>
+        <${Field} label="Jahr"><select value=${von.jahr} onChange=${(e) => setVon({ ...von, jahr: Number(e.target.value) })}>${jahre.map((j) => html`<option value=${j}>${j}</option>`)}</select><//>
+        <${Field} label="Bis Monat"><select value=${bis.monat} onChange=${(e) => setBis({ ...bis, monat: Number(e.target.value) })}>${monate.map((m, i) => html`<option value=${i + 1}>${m}</option>`)}</select><//>
+        <${Field} label="Jahr"><select value=${bis.jahr} onChange=${(e) => setBis({ ...bis, jahr: Number(e.target.value) })}>${jahre.map((j) => html`<option value=${j}>${j}</option>`)}</select><//>
+      </div>` : html`
       <div class="grid2">
         <${Field} label="Jahr"><select value=${jahr} onChange=${(e) => setJahr(Number(e.target.value))}>${jahre.map((j) => html`<option value=${j}>${j}</option>`)}</select><//>
         ${art === 'monat' && html`<${Field} label="Monat"><select value=${monat} onChange=${(e) => setMonat(Number(e.target.value))}>${monate.map((m, i) => html`<option value=${i + 1}>${m}</option>`)}</select><//>`}
         ${art === 'quartal' && html`<${Field} label="Quartal"><select value=${quartal} onChange=${(e) => setQuartal(Number(e.target.value))}>${[1, 2, 3, 4].map((x) => html`<option value=${x}>${x}. Quartal</option>`)}</select><//>`}
-      </div>
+      </div>`}
       <div class="card pad">
         <div class="kv"><span>${zr.label}</span><b>${liste.length} Belege</b></div>
         <div class="kv muted"><span>Netto</span><span>${euro(sum('netto'))}</span></div>

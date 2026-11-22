@@ -34,6 +34,10 @@ const storno = L.berechne(pos.map((p) => ({ ...p, menge: -p.menge })), { art: 'p
 assert.equal(storno.brutto, -b.brutto);
 assert.equal(L.zeitraumGrenzen('quartal', 2026, 4).bis, '2026-12-31');
 assert.equal(L.zeitraumGrenzen('monat', 2026, 2).bis, '2026-02-28');
+const zb = L.zeitraumGrenzen('bereich', 0, { von: { jahr: 2026, monat: 11 }, bis: { jahr: 2027, monat: 2 } });
+assert.equal(zb.von, '2026-11-01'); assert.equal(zb.bis, '2027-02-28'); assert.equal(zb.label, 'November 2026 bis Februar 2027');
+assert.equal(L.zeitraumGrenzen('bereich', 0, { von: { jahr: 2026, monat: 3 }, bis: { jahr: 2026, monat: 1 } }).label, 'Januar bis März 2026');
+assert.equal(L.formatNummer('RE', L.periodeVon('2026-01-15'), 7), 'RE-2026-01-0007');
 assert.equal(L.faelligkeit({ letzterTermin: '2026-11-01', intervallWochen: 6 }, '2026-12-10').inTagen, 3);
 console.log('Logik ok');
 
