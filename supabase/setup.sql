@@ -62,6 +62,11 @@ end $$;
 revoke all on function public.next_invoice_number(int, int) from public, anon;
 grant execute on function public.next_invoice_number(int, int) to authenticated;
 
+-- Zugriff über die Data API nur für angemeldete Benutzer (die Zeilen-Regeln oben gelten zusätzlich).
+-- Nötig, falls beim Anlegen des Projekts "Grant API access to new tables automatically" aus war.
+revoke all on public.records, public.counters from anon;
+grant select, insert, update, delete on public.records, public.counters to authenticated;
+
 -- 3. Dateispeicher für die (verschlüsselten) Rechnungs-PDFs
 insert into storage.buckets (id, name, public)
 values ('files', 'files', false)
