@@ -1,5 +1,5 @@
 // Offline-Cache für die App-Dateien. Bei jeder neuen Version VERSION erhöhen.
-const VERSION = 'v1.1.0';
+const VERSION = 'v1.1.1';
 const DATEIEN = [
   './', './index.html', './manifest.webmanifest', './css/app.css',
   './config.js', './js/main.js', './js/db.js', './js/logic.js', './js/pdf.js', './js/einvoice.js', './js/export.js',
